@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2018 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -809,133 +809,6 @@ limCleanup(tpAniSirGlobal pMac)
 
 } /*** end limCleanup() ***/
 
-
-#ifdef WLAN_FEATURE_11W
-/**
- * lim_is_assoc_req_for_drop()- function to decides to drop assoc\reassoc
- *  frames.
- * @mac: pointer to global mac structure
- * @rx_pkt_info: rx packet meta information
- *
- * This function is called before enqueuing the frame to PE queue to
- * drop flooded assoc/reassoc frames getting into PE Queue.
- *
- * Return: true for dropping the frame otherwise false
- */
-
-bool lim_is_assoc_req_for_drop(tpAniSirGlobal mac, uint8_t *rx_pkt_info)
-{
-	uint8_t session_id;
-	uint16_t aid;
-	tpPESession session_entry;
-	tpSirMacMgmtHdr mac_hdr;
-	tpDphHashNode sta_ds;
-
-	mac_hdr = WDA_GET_RX_MAC_HEADER(rx_pkt_info);
-	session_entry = peFindSessionByBssid(mac, mac_hdr->bssId, &session_id);
-	if (!session_entry) {
-		PELOG1(limLog(pMac, LOG1,
-			FL("session does not exist for given STA [%pM]"),
-			mac_hdr->sa););
-		return false;
-	}
-
-	sta_ds = dphLookupHashEntry(mac, mac_hdr->sa, &aid,
-				&session_entry->dph.dphHashTable);
-	if (!sta_ds) {
-		PELOG1(limLog(pMac, LOG1, FL("pStaDs is NULL")););
-		return false;
-	}
-
-	if (!sta_ds->rmfEnabled)
-		return false;
-
-	if (sta_ds->pmfSaQueryState == DPH_SA_QUERY_IN_PROGRESS)
-		return true;
-
-	if (sta_ds->last_assoc_received_time &&
-		((vos_timer_get_system_time() -
-			 sta_ds->last_assoc_received_time) < 1000))
-		return true;
-
-	sta_ds->last_assoc_received_time = vos_timer_get_system_time();
-	return false;
-}
-#endif
-/**
- * lim_is_deauth_diassoc_for_drop()- function to decides to drop deauth\diassoc
- *  frames.
- * @mac: pointer to global mac structure
- * @rx_pkt_info: rx packet meta information
- *
- * This function is called before enqueuing the frame to PE queue to
- * drop flooded deauth/diassoc frames getting into PE Queue.
- *
- * Return: true for dropping the frame otherwise false
- */
-
-bool lim_is_deauth_diassoc_for_drop(tpAniSirGlobal mac, uint8_t *rx_pkt_info)
-{
-	uint8_t session_id;
-	uint16_t aid;
-	tpPESession session_entry;
-	tpSirMacMgmtHdr mac_hdr;
-	tpDphHashNode   sta_ds;
-
-	mac_hdr = WDA_GET_RX_MAC_HEADER(rx_pkt_info);
-	session_entry = peFindSessionByBssid(mac, mac_hdr->bssId, &session_id);
-	if (!session_entry) {
-		PELOG1(limLog(mac, LOG1,
-			FL("session does not exist for given STA [%pM]"),
-			mac_hdr->sa););
-		return true;
-	}
-
-	sta_ds = dphLookupHashEntry(mac, mac_hdr->sa, &aid,
-					&session_entry->dph.dphHashTable);
-	if (!sta_ds) {
-		PELOG1(limLog(mac, LOG1,FL("pStaDs is NULL")););
-		return true;
-	}
-
-#ifdef WLAN_FEATURE_11W
-	if (session_entry->limRmfEnabled) {
-		if ((WDA_GET_RX_DPU_FEEDBACK(rx_pkt_info) &
-			DPU_FEEDBACK_UNPROTECTED_ERROR)) {
-			/* It may be possible that deauth/diassoc frames from a
-			 * spoofy AP is received. So if all further
-			 * deauth/diassoc frmaes are dropped, then it may
-			 * result in lossing deauth/diassoc frames from genuine
-			 * AP. So process all deauth/diassoc frames with
-			 * a time difference of 1 sec.
-			 */
-			if ((vos_timer_get_system_time() -
-				 sta_ds->last_unprot_deauth_disassoc) < 1000)
-				return true;
-
-			sta_ds->last_unprot_deauth_disassoc =
-					vos_timer_get_system_time();
-		} else {
-			/* PMF enabed, Management frames are protected */
-			if (sta_ds->proct_deauh_disassoc_cnt)
-				return true;
-			else
-				sta_ds->proct_deauh_disassoc_cnt++;
-		}
-	}
-	else
-#endif
-	/* PMF disabled */
-	{
-		if (sta_ds->isDisassocDeauthInProgress)
-			return true;
-		else
-			sta_ds->isDisassocDeauthInProgress++;
-	}
-
-	return false;
-}
-
 /** -------------------------------------------------------------
 \fn peOpen
 \brief will be called in Open sequence from macOpen
@@ -997,7 +870,6 @@ tSirRetStatus peOpen(tpAniSirGlobal pMac, tMacOpenParameters *pMacOpenParam)
         status = eSIR_FAILURE;
         goto pe_open_lock_fail;
     }
-    pMac->lim.deauthMsgCnt = 0;
     pMac->lim.retry_packet_cnt = 0;
     pMac->lim.gLimIbssRetryCnt = 0;
 
@@ -1239,6 +1111,21 @@ limPostMsgApi(tpAniSirGlobal pMac, tSirMsgQ *pMsg)
 
 } /*** end limPostMsgApi() ***/
 
+/**
+ * lim_post_msg_high_pri() - posts high priority pe message
+ * @mac: mac context
+ * @msg: message to be posted
+ *
+ * This function is used to post high priority pe message
+ *
+ * Return: returns value returned by vos_mq_post_message_by_priority
+ */
+uint32_t
+lim_post_msg_high_pri(tpAniSirGlobal mac, tSirMsgQ *msg)
+{
+	return vos_mq_post_message_by_priority(VOS_MQ_ID_PE, (vos_msg_t *)msg,
+					       HIGH_PRIORITY);
+}
 
 /*--------------------------------------------------------------------------
 
@@ -1351,7 +1238,7 @@ VOS_STATUS peHandleMgmtFrame( v_PVOID_t pvosGCtx, v_PVOID_t vosBuff)
     mHdr = WDA_GET_RX_MAC_HEADER(pRxPacketInfo);
     if(mHdr->fc.type == SIR_MAC_MGMT_FRAME) {
         PELOG1(limLog( pMac, LOG1,
-               FL("RxBd=%p mHdr=%p Type: %d Subtype: %d  Sizes:FC%d Mgmt%d"),
+               FL("RxBd=%pK mHdr=%pK Type: %d Subtype: %d  Sizes:FC%d Mgmt%d"),
                pRxPacketInfo, mHdr, mHdr->fc.type, mHdr->fc.subType,
                sizeof(tSirMacFrameCtl), sizeof(tSirMacMgmtHdr));)
 
@@ -1359,12 +1246,6 @@ VOS_STATUS peHandleMgmtFrame( v_PVOID_t pvosGCtx, v_PVOID_t vosBuff)
                WDA_GET_RX_MPDU_LEN(pRxPacketInfo),
                WDA_GET_RX_MPDU_HEADER_LEN(pRxPacketInfo),
                WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo));
-
-        MTRACE(macTrace(pMac, TRACE_CODE_RX_MGMT,
-                        WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo),
-                        LIM_TRACE_MAKE_RXMGMT(mHdr->fc.subType,
-                        (tANI_U16) (((tANI_U16)(mHdr->seqControl.seqNumHi << 4))
-                        | mHdr->seqControl.seqNumLo)));)
 
 #ifdef WLAN_FEATURE_ROAM_SCAN_OFFLOAD
        if (WDA_GET_ROAMCANDIDATEIND(pRxPacketInfo))
@@ -1725,9 +1606,10 @@ lim_enc_type_matched(tpAniSirGlobal mac_ctx,
            bcn->capabilityInfo.privacy, bcn->wpaPresent,
            bcn->rsnPresent);
     limLog(mac_ctx, LOG1,
-           FL("session:: Privacy :%d EncyptionType: %d"),
+           FL("session:: Privacy :%d EncyptionType: %d OSEN %d WPS %d"),
            SIR_MAC_GET_PRIVACY(session->limCurrentBssCaps),
-           session->encryptType);
+           session->encryptType, session->osen_association,
+           session->wps_registration);
 
     /* This is handled by sending probe req due to IOT issues so return TRUE */
     if ((bcn->capabilityInfo.privacy) !=
@@ -1760,6 +1642,24 @@ lim_enc_type_matched(tpAniSirGlobal mac_ctx,
                     || (session->encryptType == eSIR_ED_CCMP)
                     || (session->encryptType == eSIR_ED_AES_128_CMAC)))
         return true;
+
+    /* For HS2.0, RSN ie is not present
+     * in beacon. Therefore no need to
+     * check for security type in case
+     * OSEN session.
+     * For WPS registration session no need to
+     * detect security mismatch as it won't match and
+     * driver may end up sending probe request without
+     * WPS IE during WPS registration process.
+     */
+     /*TODO: AP capability mismatch
+     * is not checked here because
+     * no logic for beacon parsing
+     * is avilable for HS2.0
+     */
+    if (session->osen_association ||
+            session->wps_registration)
+        return eSIR_TRUE;
 
     return false;
 }
@@ -2031,6 +1931,12 @@ void limHandleMissedBeaconInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg)
         limMissedBeaconInActiveMode(pMac, psessionEntry);
     }
 #endif
+    if (pMac->pmm.inMissedBeaconScenario == TRUE) {
+        limLog(pMac, LOGW,
+               FL("beacon miss handling is already going on for BSSIdx:%d"),
+               pSirMissedBeaconInd->bssIdx);
+        return;
+    }
     else
     {
         limLog(pMac, LOGE,
@@ -2317,6 +2223,30 @@ eHalStatus limRoamFillBssDescr(tpAniSirGlobal pMac,
    return eHAL_STATUS_SUCCESS;
 }
 
+/**
+ * lim_mon_init_session() - create PE session for monitor mode operation
+ * @mac_ptr: mac pointer
+ * @msg: Pointer to struct sir_create_session type.
+ *
+ * Return: NONE
+ */
+void lim_mon_init_session(tpAniSirGlobal mac_ptr,
+			  struct sir_create_session *msg)
+{
+	tpPESession psession_entry;
+	uint8_t session_id;
+
+	if((psession_entry = peCreateSession(mac_ptr, msg->bss_id,
+	                                  &session_id, mac_ptr->lim.maxStation,
+	                                  eSIR_MONITOR_MODE)) == NULL) {
+		limLog(mac_ptr, LOGE,
+		       FL("Monitor mode: Session Can not be created"));
+		limPrintMacAddr(mac_ptr, msg->bss_id, LOGE);
+		return;
+	}
+	psession_entry->vhtCapability = 1;
+}
+
 /** -----------------------------------------------------------------
   * brief limRoamOffloadSynchInd() - Handles Roam Synch Indication
   * param pMac - global mac structure
@@ -2391,7 +2321,7 @@ void limRoamOffloadSynchInd(tpAniSirGlobal pMac, tpSirMsgQ pMsg)
      pftSessionEntry->limPrevSmeState = pftSessionEntry->limSmeState;
      pftSessionEntry->limSmeState = eLIM_SME_WT_REASSOC_STATE;
      VOS_TRACE(VOS_MODULE_ID_PE, VOS_TRACE_LEVEL_DEBUG,
-               "LFR3:%s:created session (%p) with id = %d",
+               "LFR3:%s:created session (%pK) with id = %d",
                __func__, pftSessionEntry, pftSessionEntry->peSessionId);
      /* Update the ReAssoc BSSID of the current session */
      sirCopyMacAddr(psessionEntry->limReAssocbssId, pbssDescription->bssId);
@@ -2567,17 +2497,6 @@ tMgmtFrmDropReason limIsPktCandidateForDrop(tpAniSirGlobal pMac, tANI_U8 *pRxPac
     framelen = WDA_GET_RX_PAYLOAD_LEN(pRxPacketInfo);
     pBody    = WDA_GET_RX_MPDU_DATA(pRxPacketInfo);
 
-    if ((subType == SIR_MAC_MGMT_DEAUTH ||
-         subType == SIR_MAC_MGMT_DISASSOC) &&
-        lim_is_deauth_diassoc_for_drop(pMac, pRxPacketInfo))
-        return eMGMT_DROP_SPURIOUS_FRAME;
-
-#ifdef WLAN_FEATURE_11W
-    if ((subType == SIR_MAC_MGMT_ASSOC_REQ ||
-         subType == SIR_MAC_MGMT_REASSOC_REQ) &&
-        lim_is_assoc_req_for_drop(pMac, pRxPacketInfo))
-        return eMGMT_DROP_SPURIOUS_FRAME;
-#endif
     //Drop INFRA Beacons and Probe Responses in IBSS Mode
     if( (subType == SIR_MAC_MGMT_BEACON) ||
         (subType == SIR_MAC_MGMT_PROBE_RSP))

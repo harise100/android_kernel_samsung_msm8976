@@ -211,13 +211,47 @@ static inline int dentry_cmp(const struct dentry *dentry, const unsigned char *c
 	return dentry_string_cmp(cs, ct, tcount);
 }
 
+struct external_name {
+	union {
+		atomic_t count;
+		struct rcu_head head;
+		} u;
+		unsigned char name[];
+};
+
+static inline struct external_name *external_name(struct dentry *dentry)
+{
+    return container_of(dentry->d_name.name, struct external_name, name[0]);
+}
+
 static void __d_free(struct rcu_head *head)
 {
 	struct dentry *dentry = container_of(head, struct dentry, d_u.d_rcu);
 
-	if (dname_external(dentry))
-		kfree(dentry->d_name.name);
 	kmem_cache_free(dentry_cache, dentry); 
+}
+
+static void __d_free_external(struct rcu_head *head)
+{
+	struct dentry *dentry = container_of(head, struct dentry, d_u.d_rcu);
+	kfree(external_name(dentry));
+	kmem_cache_free(dentry_cache, dentry);
+}
+
+static void dentry_free(struct dentry *dentry)
+{
+    if (unlikely(dname_external(dentry))) {
+            struct external_name *p = external_name(dentry);
+            if (likely(atomic_dec_and_test(&p->u.count))) {
+                    call_rcu(&dentry->d_u.d_rcu, __d_free_external);
+                    return;
+            }
+    }
+    /* if dentry was never visible to RCU, immediate free is OK */
+    if (!(dentry->d_flags & DCACHE_RCUACCESS))
+        __d_free(&dentry->d_u.d_rcu);
+    else
+        call_rcu(&dentry->d_u.d_rcu, __d_free);
 }
 
 /*
@@ -231,50 +265,8 @@ static void d_free(struct dentry *dentry)
 	if (dentry->d_op && dentry->d_op->d_release)
 		dentry->d_op->d_release(dentry);
 
-	/* if dentry was never visible to RCU, immediate free is OK */
-	if (!(dentry->d_flags & DCACHE_RCUACCESS))
-		__d_free(&dentry->d_u.d_rcu);
-	else
-		call_rcu(&dentry->d_u.d_rcu, __d_free);
+	dentry_free(dentry);
 }
-
-void take_dentry_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
-{
-	spin_lock(&dentry->d_lock);
-	if (unlikely(dname_external(dentry))) {
-		u32 len;
-		char *p = NULL;
-
-		for (;;) {
-			len = dentry->d_name.len;
-			spin_unlock(&dentry->d_lock);
-
-			if (p)
-				kfree(p);
-			p = kmalloc(len + 1, GFP_KERNEL | __GFP_NOFAIL);
-
-			spin_lock(&dentry->d_lock);
-			if (dentry->d_name.len <= len)
-				break;
-		}
-		memcpy(p, dentry->d_name.name, dentry->d_name.len + 1);
-		spin_unlock(&dentry->d_lock);
-
-		name->name = p;
-	} else {
-		memcpy(name->inline_name, dentry->d_iname, DNAME_INLINE_LEN);
-		spin_unlock(&dentry->d_lock);
-		name->name = name->inline_name;
-	}
-}
-EXPORT_SYMBOL(take_dentry_name_snapshot);
-
-void release_dentry_name_snapshot(struct name_snapshot *name)
-{
-	if (unlikely(name->name != name->inline_name))
-		kfree(name->name);
-}
-EXPORT_SYMBOL(release_dentry_name_snapshot);
 
 /**
  * dentry_rcuwalk_barrier - invalidate in-progress rcu-walk lookups
@@ -337,6 +329,33 @@ static void dentry_unlink_inode(struct dentry * dentry)
 	else
 		iput(inode);
 }
+
+void take_dentry_name_snapshot(struct name_snapshot *name, struct dentry *dentry)
+{
+       spin_lock(&dentry->d_lock);
+       if (unlikely(dname_external(dentry))) {
+               struct external_name *p = external_name(dentry);
+               atomic_inc(&p->u.count);
+               spin_unlock(&dentry->d_lock);
+               name->name = p->name;
+       } else {
+               memcpy(name->inline_name, dentry->d_iname, DNAME_INLINE_LEN);
+               spin_unlock(&dentry->d_lock);
+               name->name = name->inline_name;
+       }
+}
+EXPORT_SYMBOL(take_dentry_name_snapshot);
+
+void release_dentry_name_snapshot(struct name_snapshot *name)
+{
+       if (unlikely(name->name != name->inline_name)) {
+               struct external_name *p;
+               p = container_of(name->name, struct external_name, name[0]);
+               if (unlikely(atomic_dec_and_test(&p->u.count)))
+                       kfree_rcu(p, u.head);
+       }
+}
+EXPORT_SYMBOL(release_dentry_name_snapshot);
 
 /*
  * dentry_lru_(add|del|prune|move_tail) must be called with d_lock held.
@@ -913,6 +932,7 @@ void shrink_dcache_sb(struct super_block *sb)
 		list_splice_init(&sb->s_dentry_lru, &tmp);
 		spin_unlock(&dcache_lru_lock);
 		shrink_dentry_list(&tmp);
+		cond_resched();
 		spin_lock(&dcache_lru_lock);
 	}
 	spin_unlock(&dcache_lru_lock);
@@ -1296,11 +1316,14 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 	 */
 	dentry->d_iname[DNAME_INLINE_LEN-1] = 0;
 	if (name->len > DNAME_INLINE_LEN-1) {
-		dname = kmalloc(name->len + 1, GFP_KERNEL);
-		if (!dname) {
+        size_t size = offsetof(struct external_name, name[1]);
+        struct external_name *p = kmalloc(size + name->len, GFP_KERNEL);
+        if (!p) {
 			kmem_cache_free(dentry_cache, dentry); 
 			return NULL;
 		}
+		atomic_set(&p->u.count, 1);
+		dname = p->name;
 	} else  {
 		dname = dentry->d_iname;
 	}	
@@ -1349,7 +1372,7 @@ struct dentry *d_alloc(struct dentry * parent, const struct qstr *name)
 	struct dentry *dentry = __d_alloc(parent->d_sb, name);
 	if (!dentry)
 		return NULL;
-
+	dentry->d_flags |= DCACHE_RCUACCESS;
 	spin_lock(&parent->d_lock);
 	/*
 	 * don't need child lock because it is not subject
@@ -2139,7 +2162,6 @@ static void __d_rehash(struct dentry * entry, struct hlist_bl_head *b)
 {
 	BUG_ON(!d_unhashed(entry));
 	hlist_bl_lock(b);
-	entry->d_flags |= DCACHE_RCUACCESS;
 	hlist_bl_add_head_rcu(&entry->d_hash, b);
 	hlist_bl_unlock(b);
 }
@@ -2193,8 +2215,8 @@ EXPORT_SYMBOL(dentry_update_name_case);
 
 static void switch_names(struct dentry *dentry, struct dentry *target)
 {
-	if (dname_external(target)) {
-		if (dname_external(dentry)) {
+	if (unlikely(dname_external(target))) {
+		if (unlikely(dname_external(dentry))) {
 			/*
 			 * Both external: swap the pointers
 			 */
@@ -2210,7 +2232,7 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
 			target->d_name.name = target->d_iname;
 		}
 	} else {
-		if (dname_external(dentry)) {
+		if (unlikely(dname_external(dentry))) {
 			/*
 			 * dentry:external, target:internal.  Give dentry's
 			 * storage to target and make dentry internal
@@ -2231,6 +2253,25 @@ static void switch_names(struct dentry *dentry, struct dentry *target)
 	}
 	swap(dentry->d_name.len, target->d_name.len);
 }
+
+static void copy_name(struct dentry *dentry, struct dentry *target)
+{
+       struct external_name *old_name = NULL;
+       if (unlikely(dname_external(dentry)))
+               old_name = external_name(dentry);
+       if (unlikely(dname_external(target))) {
+               atomic_inc(&external_name(target)->u.count);
+               dentry->d_name = target->d_name;
+       } else {
+               memcpy(dentry->d_iname, target->d_name.name,
+                               target->d_name.len + 1);
+               dentry->d_name.name = dentry->d_iname;
+               dentry->d_name.len = target->d_name.len;
+       }
+       if (old_name && likely(atomic_dec_and_test(&old_name->u.count)))
+               kfree_rcu(old_name, u.head);
+}
+
 
 static void dentry_lock_for_move(struct dentry *dentry, struct dentry *target)
 {
@@ -2318,11 +2359,12 @@ static void __d_move(struct dentry * dentry, struct dentry * target)
 	list_del(&target->d_child);
 
 	/* Switch the names.. */
-	switch_names(dentry, target);
+	copy_name(dentry, target);
 	swap(dentry->d_name.hash, target->d_name.hash);
 
 	/* ... and switch the parents */
 	if (IS_ROOT(dentry)) {
+		dentry->d_flags |= DCACHE_RCUACCESS;
 		dentry->d_parent = target->d_parent;
 		target->d_parent = target;
 		INIT_LIST_HEAD(&target->d_child);
@@ -2439,9 +2481,16 @@ static void __d_materialise_dentry(struct dentry *dentry, struct dentry *anon)
 	switch_names(dentry, anon);
 	swap(dentry->d_name.hash, anon->d_name.hash);
 
+	dentry->d_flags |= DCACHE_RCUACCESS;
 	dentry->d_parent = dentry;
 	list_del_init(&dentry->d_child);
 	anon->d_parent = dparent;
+	if (likely(!d_unhashed(anon))) {
+		hlist_bl_lock(&anon->d_sb->s_anon);
+		__hlist_bl_del(&anon->d_hash);
+		anon->d_hash.pprev = NULL;
+		hlist_bl_unlock(&anon->d_sb->s_anon);
+	}
 	list_move(&anon->d_child, &dparent->d_subdirs);
 
 	write_seqcount_end(&dentry->d_seq);
@@ -2496,7 +2545,6 @@ struct dentry *d_materialise_unique(struct dentry *dentry, struct inode *inode)
 				 * could splice into our tree? */
 				__d_materialise_dentry(dentry, alias);
 				write_sequnlock(&rename_lock);
-				__d_drop(alias);
 				goto found;
 			} else {
 				/* Nope, but we must(!) avoid directory
@@ -3046,6 +3094,22 @@ rename_retry:
 	write_seqlock(&rename_lock);
 	goto again;
 }
+
+void d_tmpfile(struct dentry *dentry, struct inode *inode)
+{
+	inode_dec_link_count(inode);
+	BUG_ON(dentry->d_name.name != dentry->d_iname ||
+		!hlist_unhashed(&dentry->d_u.d_alias) ||
+		!d_unlinked(dentry));
+	spin_lock(&dentry->d_parent->d_lock);
+	spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
+	dentry->d_name.len = sprintf(dentry->d_iname, "#%llu",
+				(unsigned long long)inode->i_ino);
+	spin_unlock(&dentry->d_lock);
+	spin_unlock(&dentry->d_parent->d_lock);
+	d_instantiate(dentry, inode);
+}
+EXPORT_SYMBOL(d_tmpfile);
 
 /**
  * find_inode_number - check for dentry with name

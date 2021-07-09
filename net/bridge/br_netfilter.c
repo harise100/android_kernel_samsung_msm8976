@@ -389,7 +389,7 @@ static int br_nf_pre_routing_finish_bridge(struct sk_buff *skb)
 	if (neigh) {
 		int ret;
 
-		if (neigh->hh.hh_len) {
+		if ((neigh->nud_state & NUD_CONNECTED) && neigh->hh.hh_len) {
 			neigh_hh_bridge(&neigh->hh, skb);
 			skb->dev = nf_bridge->physindev;
 			ret = br_handle_frame_finish(skb);
@@ -559,6 +559,8 @@ static struct net_device *setup_pre_routing(struct sk_buff *skb)
 	else if (skb->protocol == htons(ETH_P_PPP_SES))
 		nf_bridge->mask |= BRNF_PPPoE;
 
+	/* Must drop socket now because of tproxy. */
+	skb_orphan(skb);
 	return skb->dev;
 }
 

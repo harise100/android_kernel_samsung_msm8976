@@ -166,7 +166,7 @@ static struct rchan_buf *relay_create_buf(struct rchan *chan)
 {
 	struct rchan_buf *buf;
 
-	if (chan->n_subbufs > UINT_MAX / sizeof(size_t *))
+	if (chan->n_subbufs > KMALLOC_MAX_SIZE / sizeof(size_t *))
 		return NULL;
 
 	buf = kzalloc(sizeof(struct rchan_buf), GFP_KERNEL);
@@ -227,7 +227,7 @@ static void relay_destroy_buf(struct rchan_buf *buf)
  *	relay_remove_buf - remove a channel buffer
  *	@kref: target kernel reference that contains the relay buffer
  *
- *	Removes the file from the fileystem, which also frees the
+ *	Removes the file from the filesystem, which also frees the
  *	rchan_buf_struct and the channel buffer.  Should only be called from
  *	kref_put().
  */

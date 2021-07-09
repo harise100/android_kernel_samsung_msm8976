@@ -64,7 +64,6 @@
 
 #define MAX_SUPPORTED_PEERS_WEP 16
 
-static void limHandleSmeJoinResult(tpAniSirGlobal, tSirResultCodes, tANI_U16,tpPESession);
 static void limHandleSmeReaasocResult(tpAniSirGlobal, tSirResultCodes, tANI_U16, tpPESession);
 void limProcessMlmScanCnf(tpAniSirGlobal, tANI_U32 *);
 #ifdef FEATURE_OEM_DATA_SUPPORT
@@ -725,7 +724,7 @@ limProcessMlmAuthCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         return;
     }
     /// Process AUTH confirm from MLM
-    if (((tLimMlmAuthCnf *) pMsgBuf)->resultCode != eSIR_SME_SUCCESS)
+    if (pMlmAuthCnf->resultCode != eSIR_SME_SUCCESS)
     {
         if (psessionEntry->limSmeState == eLIM_SME_WT_AUTH_STATE)
                 {
@@ -744,8 +743,10 @@ limProcessMlmAuthCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
             cfgAuthType = pMac->lim.gLimPreAuthType;
 
         if ((cfgAuthType == eSIR_AUTO_SWITCH) &&
-                (((tLimMlmAuthCnf *) pMsgBuf)->authType == eSIR_SHARED_KEY)
-                && (eSIR_MAC_AUTH_ALGO_NOT_SUPPORTED_STATUS == ((tLimMlmAuthCnf *) pMsgBuf)->protStatusCode))
+             (pMlmAuthCnf->authType == eSIR_SHARED_KEY)
+             && ((eSIR_MAC_AUTH_ALGO_NOT_SUPPORTED_STATUS ==
+             pMlmAuthCnf->protStatusCode) ||
+             (pMlmAuthCnf->resultCode == eSIR_SME_AUTH_TIMEOUT_RESULT_CODE)))
         {
             /**
              * When Shared authentication fails with reason code "13" and
@@ -804,8 +805,8 @@ limProcessMlmAuthCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
                  * Need to send Join response with
                  * auth failure to Host.
                  */
-                limHandleSmeJoinResult(pMac,
-                              ((tLimMlmAuthCnf *) pMsgBuf)->resultCode, ((tLimMlmAuthCnf *) pMsgBuf)->protStatusCode,psessionEntry);
+                limHandleSmeJoinResult(pMac, pMlmAuthCnf->resultCode,
+                              pMlmAuthCnf->protStatusCode, psessionEntry);
             }
             else
             {
@@ -887,9 +888,10 @@ limProcessMlmAssocCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
     if (((tLimMlmAssocCnf *) pMsgBuf)->resultCode != eSIR_SME_SUCCESS)
     {
         // Association failure
-        PELOG1(limLog(pMac, LOG1, FL("SessionId:%d Association failure"
+        PELOG1(limLog(pMac, LOG1, FL("SessionId:%u Association failure"
                       "resultCode: resultCode: %d limSmeState:%d"),
                       psessionEntry->peSessionId,
+                      ((tLimMlmAssocCnf *) pMsgBuf)->resultCode,
                       psessionEntry->limSmeState);)
 
         /* If driver gets deauth when its waiting for ADD_STA_RSP then we need
@@ -985,7 +987,7 @@ limProcessMlmReassocCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
      * allowed following any change in HT params.
      */
     if (psessionEntry->ftPEContext.pFTPreAuthReq) {
-        limLog(pMac, LOG1, FL("Freeing pFTPreAuthReq= %p"),
+        limLog(pMac, LOG1, FL("Freeing pFTPreAuthReq= %pK"),
                psessionEntry->ftPEContext.pFTPreAuthReq);
         if (psessionEntry->ftPEContext.pFTPreAuthReq->pbssDescription) {
             vos_mem_free(
@@ -1180,6 +1182,7 @@ limProcessMlmAuthInd(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
         // Log error
         limLog(pMac, LOGP,
            FL("call to AllocateMemory failed for eWNI_SME_AUTH_IND"));
+        return;
     }
     limCopyU16((tANI_U8 *) &pSirSmeAuthInd->messageType, eWNI_SME_AUTH_IND);
     limAuthIndSerDes(pMac, (tpLimMlmAuthInd) pMsgBuf,
@@ -1839,7 +1842,7 @@ limProcessMlmRemoveKeyCnf(tpAniSirGlobal pMac, tANI_U32 *pMsgBuf)
  *
  * @return None
  */
-static void
+void
 limHandleSmeJoinResult(tpAniSirGlobal pMac, tSirResultCodes resultCode, tANI_U16 protStatusCode, tpPESession psessionEntry)
 {
     tpDphHashNode pStaDs = NULL;
@@ -2671,12 +2674,12 @@ limProcessApMlmAddBssRsp( tpAniSirGlobal pMac, tpSirMsgQ limMsgQ)
         if (psessionEntry->privacy)
         {
             if ((psessionEntry->gStartBssRSNIe.present) || (psessionEntry->gStartBssWPAIe.present))
-                limLog(pMac, LOG1, FL("WPA/WPA2 SAP configuration\n"));
+                limLog(pMac, LOG1, FL("WPA/WPA2 SAP configuration"));
             else
             {
                 if (pMac->lim.gLimAssocStaLimit > MAX_SUPPORTED_PEERS_WEP)
                 {
-                    limLog(pMac, LOG1, FL("WEP SAP Configuration\n"));
+                    limLog(pMac, LOG1, FL("WEP SAP Configuration"));
                     pMac->lim.gLimAssocStaLimit = MAX_SUPPORTED_PEERS_WEP;
                     isWepEnabled = TRUE;
                 }
@@ -2942,6 +2945,11 @@ limProcessStaMlmAddBssRspFT(tpAniSirGlobal pMac, tpSirMsgQ limMsgQ, tpPESession 
     tpAddBssParams pAddBssParams = (tpAddBssParams) limMsgQ->bodyptr;
     tANI_U32 selfStaDot11Mode = 0;
 
+#ifdef FEATURE_WLAN_ESE
+    tLimMlmReassocReq *pMlmReassocReq;
+    tANI_U32 val = 0;
+#endif
+
     /* Sanity Checks */
 
     if (pAddBssParams == NULL)
@@ -2962,6 +2970,39 @@ limProcessStaMlmAddBssRspFT(tpAniSirGlobal pMac, tpSirMsgQ limMsgQ, tpPESession 
         limPrintMacAddr(pMac, pAddBssParams->staContext.staMac, LOGE);
         goto end;
     }
+
+#ifdef FEATURE_WLAN_ESE
+    /*
+     * In case of Ese Reassociation, change the reassoc timer
+     * value.
+     */
+    pMlmReassocReq = (tLimMlmReassocReq *)(psessionEntry->pLimMlmReassocReq);
+    if (pMlmReassocReq == NULL)
+    {
+        limLog(pMac, LOGE,
+                   FL("Invalid pMlmReassocReq"));
+        goto end;
+    }
+    val = pMlmReassocReq->reassocFailureTimeout;
+    if (psessionEntry->isESEconnection)
+    {
+        val = val/LIM_MAX_REASSOC_RETRY_LIMIT;
+    }
+    if (tx_timer_deactivate(&pMac->lim.limTimers.gLimReassocFailureTimer) !=
+            TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+                   FL("unable to deactivate Reassoc failure timer"));
+    }
+    val = SYS_MS_TO_TICKS(val);
+    if (tx_timer_change(&pMac->lim.limTimers.gLimReassocFailureTimer,
+                        val, 0) != TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+                   FL("unable to change Reassociation failure timer"));
+    }
+#endif
+
     // Prepare and send Reassociation request frame
     // start reassoc timer.
 #ifdef WLAN_FEATURE_ROAM_OFFLOAD
@@ -3793,6 +3834,11 @@ static void limProcessSwitchChannelReAssocReq(tpAniSirGlobal pMac, tpPESession p
 {
     tLimMlmReassocCnf       mlmReassocCnf;
     tLimMlmReassocReq       *pMlmReassocReq;
+
+#ifdef FEATURE_WLAN_ESE
+    tANI_U32                val = 0;
+#endif
+
     pMlmReassocReq = (tLimMlmReassocReq *)(psessionEntry->pLimMlmReassocReq);
     if(pMlmReassocReq == NULL)
     {
@@ -3807,6 +3853,32 @@ static void limProcessSwitchChannelReAssocReq(tpAniSirGlobal pMac, tpPESession p
         mlmReassocCnf.resultCode = eSIR_SME_CHANNEL_SWITCH_FAIL;
         goto end;
     }
+#ifdef FEATURE_WLAN_ESE
+    /*
+     * In case of Ese Reassociation, change the reassoc timer
+     * value.
+     */
+    val = pMlmReassocReq->reassocFailureTimeout;
+    if (psessionEntry->isESEconnection)
+    {
+        val = val/LIM_MAX_REASSOC_RETRY_LIMIT;
+    }
+    if (tx_timer_deactivate(&pMac->lim.limTimers.gLimReassocFailureTimer) !=
+                 TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to deactivate Reassoc failure timer"));
+    }
+    val = SYS_MS_TO_TICKS(val);
+    if (tx_timer_change(&pMac->lim.limTimers.gLimReassocFailureTimer,
+                        val, 0) != TX_SUCCESS)
+    {
+        limLog(pMac, LOGP,
+               FL("unable to change Reassociation failure timer"));
+
+    }
+#endif
+    pMac->lim.limTimers.gLimReassocFailureTimer.sessionId = psessionEntry->peSessionId;
     /// Start reassociation failure timer
     MTRACE(macTrace(pMac, TRACE_CODE_TIMER_ACTIVATE, psessionEntry->peSessionId, eLIM_REASSOC_FAIL_TIMER));
     if (tx_timer_activate(&pMac->lim.limTimers.gLimReassocFailureTimer)
@@ -4294,6 +4366,8 @@ void limProcessFinishScanRsp(tpAniSirGlobal pMac,  void *body)
     {
         case eLIM_HAL_FINISH_SCAN_WAIT_STATE:
             pMac->lim.gLimHalScanState = eLIM_HAL_IDLE_SCAN_STATE;
+            if (pMac->lim.abortScan)
+                pMac->lim.abortScan = 0;
             limCompleteMlmScan(pMac, eSIR_SME_SUCCESS);
             if (limIsChanSwitchRunning(pMac))
             {
@@ -5053,10 +5127,10 @@ void limProcessRxScanEvent(tpAniSirGlobal pMac, void *buf)
 
     switch (pScanEvent->event)
     {
-        case SCAN_EVENT_STARTED:
+        case SIR_SCAN_EVENT_STARTED:
             break;
-        case SCAN_EVENT_START_FAILED:
-        case SCAN_EVENT_COMPLETED:
+        case SIR_SCAN_EVENT_START_FAILED:
+        case SIR_SCAN_EVENT_COMPLETED:
             pMac->lim.fOffloadScanPending = 0;
             pMac->lim.fOffloadScanP2PSearch = 0;
             pMac->lim.fOffloadScanP2PListen = 0;
@@ -5072,9 +5146,7 @@ void limProcessRxScanEvent(tpAniSirGlobal pMac, void *buf)
                  * pending then indicate confirmation with status failure
                  */
                 if (pMac->lim.mgmtFrameSessionId != 0xff) {
-                    limSendSmeRsp(pMac, eWNI_SME_ACTION_FRAME_SEND_CNF,
-                                        eSIR_SME_SEND_ACTION_FAIL,
-                                        pMac->lim.mgmtFrameSessionId, 0);
+                    limP2PActionCnf(pMac, false);
                     pMac->lim.mgmtFrameSessionId = 0xff;
                 }
 
@@ -5084,7 +5156,7 @@ void limProcessRxScanEvent(tpAniSirGlobal pMac, void *buf)
                 limSendScanOffloadComplete(pMac, pScanEvent);
             }
             break;
-        case SCAN_EVENT_FOREIGN_CHANNEL:
+        case SIR_SCAN_EVENT_FOREIGN_CHANNEL:
             if (P2P_SCAN_TYPE_LISTEN == pScanEvent->p2pScanType)
             {
                 /*Send Ready on channel indication to SME */
@@ -5105,9 +5177,9 @@ void limProcessRxScanEvent(tpAniSirGlobal pMac, void *buf)
                 limAddScanChannelInfo(pMac, vos_freq_to_chan(pScanEvent->chanFreq));
             }
             break;
-        case SCAN_EVENT_BSS_CHANNEL:
-        case SCAN_EVENT_DEQUEUED:
-        case SCAN_EVENT_PREEMPTED:
+        case SIR_SCAN_EVENT_BSS_CHANNEL:
+        case SIR_SCAN_EVENT_DEQUEUED:
+        case SIR_SCAN_EVENT_PREEMPTED:
         default:
             VOS_TRACE(VOS_MODULE_ID_PE, VOS_TRACE_LEVEL_DEBUG,
                     "Received unhandled scan event %u", pScanEvent->event);

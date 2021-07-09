@@ -50,7 +50,6 @@
 #include "vos_lock.h"
 #include "halTypes.h"
 #include "sirApi.h"
-#include "btcApi.h"
 #include "vos_nvitem.h"
 #include "p2p_Api.h"
 #include "smeInternal.h" 
@@ -1827,50 +1826,6 @@ eHalStatus sme_DHCPStopInd( tHalHandle hHal,
                             tANI_U8 sessionId );
 
 /* ---------------------------------------------------------------------------
-    \fn sme_BtcSignalBtEvent
-    \brief  API to signal Bluetooth (BT) event to the WLAN driver. Based on the
-            BT event type and the current operating mode of Libra (full power,
-            BMPS, UAPSD etc), appropriate Bluetooth Coexistence (BTC) strategy
-            would be employed.
-    \param  hHal - The handle returned by macOpen.
-    \param  pBtcBtEvent -  Pointer to a caller allocated object of type tSmeBtEvent
-                           Caller owns the memory and is responsible for freeing it.
-    \return VOS_STATUS
-            VOS_STATUS_E_FAILURE  BT Event not passed to HAL. This can happen
-                                   if driver has not yet been initialized or if BTC
-                                   Events Layer has been disabled.
-            VOS_STATUS_SUCCESS    BT Event passed to HAL
-  ---------------------------------------------------------------------------*/
-VOS_STATUS sme_BtcSignalBtEvent (tHalHandle hHal, tpSmeBtEvent pBtcBtEvent);
-
-/* ---------------------------------------------------------------------------
-    \fn sme_BtcSetConfig
-    \brief  API to change the current Bluetooth Coexistence (BTC) configuration
-            This function should be invoked only after CFG download has completed.
-            Calling it after sme_HDDReadyInd is recommended.
-    \param  hHal - The handle returned by macOpen.
-    \param  pSmeBtcConfig - Pointer to a caller allocated object of type
-                            tSmeBtcConfig. Caller owns the memory and is responsible
-                            for freeing it.
-    \return VOS_STATUS
-            VOS_STATUS_E_FAILURE  Config not passed to HAL.
-            VOS_STATUS_SUCCESS  Config passed to HAL
-  ---------------------------------------------------------------------------*/
-VOS_STATUS sme_BtcSetConfig (tHalHandle hHal, tpSmeBtcConfig pSmeBtcConfig);
-
-/* ---------------------------------------------------------------------------
-    \fn sme_BtcGetConfig
-    \brief  API to retrieve the current Bluetooth Coexistence (BTC) configuration
-    \param  hHal - The handle returned by macOpen.
-    \param  pSmeBtcConfig - Pointer to a caller allocated object of type tSmeBtcConfig.
-                            Caller owns the memory and is responsible for freeing it.
-    \return VOS_STATUS
-            VOS_STATUS_E_FAILURE - failure
-            VOS_STATUS_SUCCESS  success
-  ---------------------------------------------------------------------------*/
-VOS_STATUS sme_BtcGetConfig (tHalHandle hHal, tpSmeBtcConfig pSmeBtcConfig);
-
-/* ---------------------------------------------------------------------------
     \fn sme_SetCfgPrivacy
     \brief  API to set configure privacy parameters
     \param  hHal - The handle returned by macOpen.
@@ -2795,6 +2750,9 @@ eHalStatus sme_SetRoamScanControl(tHalHandle hHal, tANI_U8 sessionId,
 eHalStatus sme_UpdateIsFastRoamIniFeatureEnabled(tHalHandle hHal,
                                                  tANI_U8 sessionId,
         const v_BOOL_t isFastRoamIniFeatureEnabled);
+
+eHalStatus sme_config_fast_roaming(tHalHandle hhal, tANI_U8 session_id,
+				   const bool is_fast_roam_enabled);
 
 /*--------------------------------------------------------------------------
   \brief sme_UpdateIsMAWCIniFeatureEnabled() -
@@ -3857,6 +3815,8 @@ eHalStatus sme_UpdateAddIE(tHalHandle hHal,
 
 eHalStatus sme_UpdateConnectDebug(tHalHandle hHal, tANI_U32 set_value);
 const char * sme_requestTypetoString(const v_U8_t requestType);
+const char * sme_scan_type_to_string(const uint8_t scan_type);
+const char * sme_bss_type_to_string(const uint8_t bss_type);
 const char * sme_PmcStatetoString(const v_U8_t pmcState);
 eHalStatus sme_ApDisableIntraBssFwd(tHalHandle hHal, tANI_U8 sessionId,
                                     tANI_BOOLEAN disablefwd);
@@ -3961,15 +3921,6 @@ eHalStatus sme_UpdateDFSScanMode(tHalHandle hHal,
   \sa
   --------------------------------------------------------------------------*/
 v_BOOL_t sme_GetDFSScanMode(tHalHandle hHal);
-
-/* ---------------------------------------------------------------------------
-    \fn sme_staInMiddleOfRoaming
-    \brief  This function returns TRUE if STA is in the middle of roaming state
-    \param  hHal - HAL handle for device
-    \param  sessionId - Session identifier
-    \- return TRUE or FALSE
-    -------------------------------------------------------------------------*/
-tANI_BOOLEAN sme_staInMiddleOfRoaming(tHalHandle hHal, tANI_U8 sessionId);
 
 /* ---------------------------------------------------------------------------
     \fn sme_PsOffloadIsStaInPowerSave
@@ -4434,6 +4385,7 @@ void sme_set_pdev_ht_vht_ies(tHalHandle hHal, bool enable2x2);
 
 void sme_update_vdev_type_nss(tHalHandle hal, uint8_t max_supp_nss,
 		uint32_t vdev_type_nss, eCsrBand band);
+void sme_update_user_configured_nss(tHalHandle hal, uint8_t nss);
 void sme_set_vdev_nss(tHalHandle hal, bool enable2x2);
 void sme_set_per_band_chainmask_supp(tHalHandle hal, bool val);
 void sme_set_lte_coex_supp(tHalHandle hal, bool val);
@@ -4482,10 +4434,6 @@ static inline VOS_STATUS sme_send_egap_conf_params(uint32_t enable,
 }
 #endif
 
-eHalStatus sme_set_dense_roam_params(tHalHandle hal,
-					uint32_t rssi_thresh_offset,
-					uint32_t min_aps, uint32_t status,
-					uint32_t traffic_thresh);
 #ifdef WLAN_FEATURE_WOW_PULSE
 VOS_STATUS sme_set_wow_pulse(struct wow_pulse_mode *wow_pulse_set_info);
 #endif
@@ -4504,4 +4452,35 @@ bool sme_is_sta_smps_allowed(tHalHandle hHal, uint8_t session_id);
 
 eHalStatus sme_delete_all_tdls_peers(tHalHandle hal, uint8_t session_id);
 
+VOS_STATUS sme_is_session_valid(tHalHandle hal_handle, uint8_t session_id);
+
+eHalStatus sme_remove_bssid_from_scan_list(tHalHandle hal,
+	tSirMacAddr bssid);
+
+void sme_send_disassoc_req_frame(tHalHandle hal, uint8_t session_id,
+		uint8_t *peer_mac, tANI_U16 reason, uint8_t wait_for_ack);
+
+/**
+ * sme_is_sta_key_exchange_in_progress() - checks whether the STA/P2P client
+ * session has key exchange in progress
+ *
+ * @hal: global hal handle
+ * @session_id: session id
+ *
+ * Return: true - if key exchange in progress
+ *         false - if not in progress
+ */
+bool sme_is_sta_key_exchange_in_progress(tHalHandle hal, uint8_t session_id);
+
+/**
+ * sme_create_mon_session() - post message to create PE session for monitormode
+ * operation
+ * @hal_handle: Handle to the HAL
+ * @bssid: pointer to bssid
+ *
+ * Return: eHAL_STATUS_SUCCESS on success, non-zero error code on failure.
+ */
+eHalStatus sme_create_mon_session(tHalHandle hal_handle, uint8_t *bssid);
+eHalStatus sme_register_p2p_ack_ind_callback(tHalHandle hal,
+					sir_p2p_ack_ind_callback callback);
 #endif //#if !defined( __SME_API_H )

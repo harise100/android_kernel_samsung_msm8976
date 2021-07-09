@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, 2018 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -395,7 +395,7 @@ void
 ol_rx_offload_deliver_ind_handler(
     ol_txrx_pdev_handle pdev,
     adf_nbuf_t msg,
-    int msdu_cnt);
+    u_int16_t msdu_cnt);
 
 /**
  * @brief Process a peer map message sent by the target.
@@ -617,8 +617,8 @@ ol_rx_pn_ind_handler(
     ol_txrx_pdev_handle pdev,
     u_int16_t peer_id,
     u_int8_t tid,
-    int seq_num_start,
-    int seq_num_end,
+    u_int16_t seq_num_start,
+    u_int16_t seq_num_end,
     u_int8_t pn_ie_cnt,
     u_int8_t *pn_ie);
 
@@ -643,7 +643,7 @@ ol_rx_pn_ind_handler(
 void
 ol_txrx_fw_stats_handler(
     ol_txrx_pdev_handle pdev,
-    u_int64_t cookie,
+    u_int8_t cookie,
     u_int8_t *stats_info_list);
 
 /**

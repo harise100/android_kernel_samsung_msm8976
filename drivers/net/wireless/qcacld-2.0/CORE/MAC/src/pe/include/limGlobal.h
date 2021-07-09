@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -260,6 +260,11 @@ typedef struct sLimMlmJoinReq
     tSirMacRateSet         operationalRateSet;
     tANI_U8                 sessionId;
     tSirBssDescription     bssDescription;
+    /*
+     * WARNING: Pls make bssDescription as last variable in struct
+     * tLimMlmJoinReq as it has ieFields followed after this bss
+     * description. Adding a variable after this corrupts the ieFields
+     */
 } tLimMlmJoinReq, *tpLimMlmJoinReq;
 
 typedef struct sLimMlmScanReq
@@ -312,25 +317,19 @@ struct tLimScanResultNode
 
 #ifdef FEATURE_OEM_DATA_SUPPORT
 
-#ifndef OEM_DATA_REQ_SIZE
-#define OEM_DATA_REQ_SIZE 280
-#endif
-#ifndef OEM_DATA_RSP_SIZE
-#define OEM_DATA_RSP_SIZE 1724
-#endif
-
 // OEM Data related structure definitions
 typedef struct sLimMlmOemDataReq
 {
     tSirMacAddr           selfMacAddr;
-    uint8_t               data_len;
+    uint32_t              data_len;
     uint8_t               *data;
 } tLimMlmOemDataReq, *tpLimMlmOemDataReq;
 
 typedef struct sLimMlmOemDataRsp
 {
    bool                   target_rsp;
-   tANI_U8                oemDataRsp[OEM_DATA_RSP_SIZE];
+   uint32_t               rsp_len;
+   uint8_t                *oem_data_rsp;
 } tLimMlmOemDataRsp, *tpLimMlmOemDataRsp;
 #endif
 

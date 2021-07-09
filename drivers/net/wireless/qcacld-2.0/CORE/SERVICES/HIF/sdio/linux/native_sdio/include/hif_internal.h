@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -39,6 +39,20 @@
 #include <linux/scatterlist.h>
 #define HIF_LINUX_MMC_SCATTER_SUPPORT
 #endif
+
+/**
+ * struct bus_request_record - basic bus request struct
+ * @request: request info
+ * @address: address of sdio register
+ * @len: length of register that this request will read or write
+ * @time: record time
+ */
+struct bus_request_record {
+	u_int32_t request;
+	u_int32_t address;
+	u_int32_t len;
+	u_int64_t time;
+};
 
 #define BUS_REQUEST_MAX_NUM                64
 
@@ -125,8 +139,6 @@ struct hif_device {
 #define HIF_DMA_BUFFER_SIZE (4 * 1024)
 #define CMD53_FIXED_ADDRESS 1
 #define CMD53_INCR_ADDRESS  2
-
-void hif_dump_current_dma_addr(void);
 
 BUS_REQUEST *hifAllocateBusRequest(HIF_DEVICE *device);
 void hifFreeBusRequest(HIF_DEVICE *device, BUS_REQUEST *busrequest);

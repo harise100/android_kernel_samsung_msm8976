@@ -1935,8 +1935,9 @@ int regulator_disable_deferred(struct regulator *regulator, int ms)
 	rdev->deferred_disables++;
 	mutex_unlock(&rdev->mutex);
 
-	ret = schedule_delayed_work(&rdev->disable_work,
-				    msecs_to_jiffies(ms));
+	ret = queue_delayed_work(system_power_efficient_wq,
+				 &rdev->disable_work,
+				 msecs_to_jiffies(ms));
 	if (ret < 0)
 		return ret;
 	else
@@ -2060,7 +2061,7 @@ EXPORT_SYMBOL_GPL(regulator_is_enabled);
  * @regulator: regulator source
  *
  * Returns positive if the regulator driver backing the source/client
- * can change its voltage, false otherwise. Usefull for detecting fixed
+ * can change its voltage, false otherwise. Useful for detecting fixed
  * or dummy regulators and disabling voltage change logic in the client
  * driver.
  */
@@ -3736,7 +3737,7 @@ static ssize_t reg_debug_volt_get(struct file *file, char __user *buf,
 	mutex_lock(&debug_buf_mutex);
 
 	output = snprintf(debug_buf, MAX_DEBUG_BUF_LEN-1, "%d\n", voltage);
-	rc = simple_read_from_buffer((void __user *) buf, output, ppos,
+	rc = simple_read_from_buffer((void __user *) buf, count, ppos,
 					(void *) debug_buf, output);
 
 	mutex_unlock(&debug_buf_mutex);

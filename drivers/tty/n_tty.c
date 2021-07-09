@@ -1509,7 +1509,7 @@ static void n_tty_set_termios(struct tty_struct *tty, struct ktermios *old)
 	int canon_change = 1;
 
 	if (old)
-		canon_change = (old->c_lflag ^ tty->termios.c_lflag) & ICANON;
+		canon_change = (old->c_lflag ^ tty->termios.c_lflag) & (ICANON | EXTPROC);
 	if (canon_change) {
 		bitmap_zero(ldata->read_flags, N_TTY_BUF_SIZE);
 		ldata->canon_head = ldata->read_tail;
@@ -1876,6 +1876,12 @@ do_it_again:
 			}
 			if (tty_hung_up_p(file))
 				break;
+			/*
+			 * Abort readers for ttys which never actually
+			 * get hung up.  See __tty_hangup().
+			 */
+			if (test_bit(TTY_HUPPING, &tty->flags))
+				break;
 			if (!timeout)
 				break;
 			if (file->f_flags & O_NONBLOCK) {
@@ -2175,7 +2181,7 @@ static int n_tty_ioctl(struct tty_struct *tty, struct file *file,
 	case TIOCINQ:
 		/* FIXME: Locking */
 		retval = ldata->read_cnt;
-		if (L_ICANON(tty))
+		if (L_ICANON(tty) && !L_EXTPROC(tty))
 			retval = inq_canon(ldata);
 		return put_user(retval, (unsigned int __user *) arg);
 	default:

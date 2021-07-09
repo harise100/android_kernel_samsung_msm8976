@@ -205,7 +205,6 @@ static int snd_usb_create_stream(struct snd_usb_audio *chip, int ctrlif, int int
 	if (! snd_usb_parse_audio_interface(chip, interface)) {
 		usb_set_interface(dev, interface, 0); /* reset the current interface */
 		usb_driver_claim_interface(&usb_audio_driver, iface, (void *)-1L);
-		return -EINVAL;
 	}
 
 	return 0;
@@ -222,6 +221,7 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 	struct usb_interface *usb_iface;
 	void *control_header;
 	int i, protocol;
+	int rest_bytes;
 
 	usb_iface = usb_ifnum_to_if(dev, ctrlif);
 	if (!usb_iface) {
@@ -248,6 +248,15 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 		return -EINVAL;
 	}
 
+	rest_bytes = (void *)(host_iface->extra + host_iface->extralen) -
+		control_header;
+
+	/* just to be sure -- this shouldn't hit at all */
+	if (rest_bytes <= 0) {
+		dev_err(&dev->dev, "invalid control header\n");
+		return -EINVAL;
+	}
+
 	switch (protocol) {
 	default:
 		snd_printdd(KERN_WARNING "unknown interface protocol %#02x, assuming v1\n",
@@ -257,10 +266,26 @@ static int snd_usb_create_streams(struct snd_usb_audio *chip, int ctrlif)
 	case UAC_VERSION_1: {
 		struct uac1_ac_header_descriptor *h1 = control_header;
 
+		if (rest_bytes < sizeof(*h1)) {
+			dev_err(&dev->dev, "too short v1 buffer descriptor\n");
+			return -EINVAL;
+		}
+
+		if (h1->bLength < sizeof(*h1)) {
+			dev_err(&dev->dev, "cannot find UAC_HEADER\n");
+			return -EINVAL;
+		}
+
 		if (!h1->bInCollection) {
 			snd_printk(KERN_INFO "skipping empty audio interface (v1)\n");
 			return -EINVAL;
 		}
+
+		if (rest_bytes < h1->bLength) {
+			dev_err(&dev->dev, "invalid buffer length (v1)\n");
+			return -EINVAL;
+		}
+
 
 		if (h1->bLength < sizeof(*h1) + h1->bInCollection) {
 			snd_printk(KERN_ERR "invalid UAC_HEADER (v1)\n");
@@ -582,9 +607,12 @@ snd_usb_audio_probe(struct usb_device *dev,
 
  __error:
 	if (chip) {
+		/* chip->probing is inside the chip->card object,
+		 * reset before memory is possibly returned.
+		 */
+		chip->probing = 0;
 		if (!chip->num_interfaces)
 			snd_card_free(chip->card);
-		chip->probing = 0;
 	}
 	mutex_unlock(&register_mutex);
  __err_val:
@@ -599,6 +627,7 @@ static void snd_usb_audio_disconnect(struct usb_device *dev,
 				     struct snd_usb_audio *chip)
 {
 	struct snd_card *card;
+	struct usb_mixer_interface *mixer;
 	struct list_head *p;
 
 	if (chip == (void *)-1L)
@@ -629,7 +658,8 @@ static void snd_usb_audio_disconnect(struct usb_device *dev,
 		}
 		/* release mixer resources */
 		list_for_each(p, &chip->mixer_list) {
-			snd_usb_mixer_disconnect(p);
+			mixer = list_entry(p, struct usb_mixer_interface, list);
+			snd_usb_mixer_disconnect(mixer);
 		}
 		usb_chip[chip->index] = NULL;
 		mutex_unlock(&register_mutex);

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014, 2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -45,7 +45,6 @@
 #include <wlan_hdd_tx_rx.h>
 #include <wniApi.h>
 #include <wlan_nlink_srv.h>
-#include <wlan_btc_svc.h>
 #include <wlan_hdd_cfg.h>
 #include <wlan_ptt_sock_svc.h>
 #include <wlan_hdd_wowl.h>
@@ -127,7 +126,7 @@ void epping_rx(void *ctx, HTC_PACKET *pPacket)
    struct sk_buff *pktSkb = (struct sk_buff *)pPacket->pPktContext;
 
    EPPING_LOG(VOS_TRACE_LEVEL_INFO,
-      "%s: pAdapter = 0x%p eid=%d, skb=0x%p, data=0x%p, len=0x%x status:%d",
+      "%s: pAdapter = 0x%pK eid=%d, skb=0x%pK, data=0x%pK, len=0x%x status:%d",
       __func__, pAdapter, eid, pktSkb, pPacket->pBuffer,
       pPacket->ActualLength, status);
 

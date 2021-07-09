@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -115,7 +115,7 @@
 #define ACS_IN_PROGRESS        (0)
 
 /** Maximum time(ms)to wait for disconnect to complete **/
-#define WLAN_WAIT_TIME_DISCONNECT  2000
+#define WLAN_WAIT_TIME_DISCONNECT  5000
 #define WLAN_WAIT_TIME_STATS       800
 #define WLAN_WAIT_TIME_POWER       800
 #define WLAN_WAIT_TIME_COUNTRY     1000
@@ -205,16 +205,13 @@
 
 #define WLAN_HDD_PUBLIC_ACTION_TDLS_DISC_RESP 14
 #define WLAN_HDD_TDLS_ACTION_FRAME 12
-#ifdef WLAN_FEATURE_HOLD_RX_WAKELOCK
-#define HDD_WAKE_LOCK_DURATION 50 //in msecs
-#endif
 
 #define WLAN_HDD_QOS_ACTION_FRAME 1
 #define WLAN_HDD_QOS_MAP_CONFIGURE 4
 #define HDD_SAP_WAKE_LOCK_DURATION 10000 //in msecs
 
 #if defined(CONFIG_HL_SUPPORT)
-#define HDD_MOD_EXIT_SSR_MAX_RETRIES 200
+#define HDD_MOD_EXIT_SSR_MAX_RETRIES 300
 #else
 #define HDD_MOD_EXIT_SSR_MAX_RETRIES 75
 #endif
@@ -303,7 +300,6 @@ extern spinlock_t hdd_context_lock;
 #define STATS_CONTEXT_MAGIC 0x53544154   //STAT
 #define RSSI_CONTEXT_MAGIC  0x52535349   //RSSI
 #define POWER_CONTEXT_MAGIC 0x504F5752   //POWR
-#define SNR_CONTEXT_MAGIC   0x534E5200   //SNR
 #define LINK_CONTEXT_MAGIC  0x4C494E4B   //LINKSPEED
 #define LINK_STATUS_MAGIC   0x4C4B5354   //LINKSTATUS(LNST)
 #define TEMP_CONTEXT_MAGIC 0x74656d70   // TEMP (temperature)
@@ -575,6 +571,8 @@ typedef enum device_mode
    WLAN_HDD_OCB
 }device_mode_t;
 
+#define WLAN_HDD_VDEV_STA_MAX 2
+
 typedef enum rem_on_channel_request_type
 {
    REMAIN_ON_CHANNEL_REQUEST,
@@ -671,7 +669,6 @@ typedef struct hdd_cfg80211_state_s
   u64 action_cookie;
   tANI_U8 *buf;
   size_t len;
-  struct sk_buff *skb;
   hdd_remain_on_chan_ctx_t* remain_on_chan_ctx;
   struct mutex remain_on_chan_ctx_lock;
   eP2PActionFrameState actionFrmState;
@@ -683,6 +680,20 @@ typedef enum{
     HDD_SSR_REQUIRED,
     HDD_SSR_DISABLED,
 }e_hdd_ssr_required;
+
+/**
+ * struct hdd_mon_set_ch_info - Holds monitor mode channel switch params
+ * @channel: Channel number.
+ * @cb_mode: Channel bonding
+ * @channel_width: Channel width 0/1/2 for 20/40/80MHz respectively.
+ * @phy_mode: PHY mode
+ */
+struct hdd_mon_set_ch_info {
+	uint8_t channel;
+	uint8_t cb_mode;
+	uint32_t channel_width;
+	eCsrPhyMode phy_mode;
+};
 
 struct hdd_station_ctx
 {
@@ -720,6 +731,8 @@ struct hdd_station_ctx
 
    /* STA ctx debug variables */
    int staDebugState;
+
+   struct hdd_mon_set_ch_info ch_info;
 };
 
 #define BSS_STOP    0
@@ -729,11 +742,26 @@ typedef struct hdd_hostapd_state_s
     int bssState;
     vos_event_t vosEvent;
     vos_event_t stop_bss_event;
+    vos_event_t sta_disassoc_event;
     VOS_STATUS vosStatus;
     v_BOOL_t bCommit;
 
 } hdd_hostapd_state_t;
 
+/**
+ * enum bss_stop_reason - reasons why a BSS is stopped.
+ * @BSS_STOP_REASON_INVALID: no reason specified explicitly.
+ * @BSS_STOP_DUE_TO_MCC_SCC_SWITCH: BSS stopped due to host
+ *  driver is trying to switch AP role to a different channel
+ *  to maintain SCC mode with the STA role on the same card.
+ *  this usually happens when STA is connected to an external
+ *  AP that runs on a different channel
+ */
+enum bss_stop_reason
+{
+	BSS_STOP_REASON_INVALID = 0,
+	BSS_STOP_DUE_TO_MCC_SCC_SWITCH = 1,
+};
 
 /*
  * Per station structure kept in HDD for multiple station support for SoftAP
@@ -828,11 +856,7 @@ struct hdd_ap_ctx_s
    v_PVOID_t sapContext;
 #endif
    v_BOOL_t dfs_cac_block_tx;
-};
-
-struct hdd_mon_ctx_s
-{
-   hdd_adapter_t *pAdapterForTx;
+   enum bss_stop_reason bss_stop_reason;
 };
 
 typedef struct hdd_scaninfo_s
@@ -1076,7 +1100,6 @@ struct hdd_adapter_s
    union {
       hdd_station_ctx_t station;
       hdd_ap_ctx_t  ap;
-      hdd_mon_ctx_t monitor;
    }sessionCtx;
 
 #ifdef WLAN_FEATURE_TSF
@@ -1119,6 +1142,9 @@ struct hdd_adapter_s
 #ifdef FEATURE_BUS_BANDWIDTH
     unsigned long prev_rx_packets;
     unsigned long prev_tx_packets;
+    unsigned long prev_fwd_tx_packets;
+    unsigned long prev_fwd_rx_packets;
+    unsigned long prev_tx_bytes;
     int connection;
 #endif
     v_BOOL_t is_roc_inprogress;
@@ -1132,7 +1158,7 @@ struct hdd_adapter_s
     v_BOOL_t offloads_configured;
 
     /* DSCP to UP QoS Mapping */
-    sme_QosWmmUpType hddWmmDscpToUpMap[WLAN_HDD_MAX_DSCP+1];
+    sme_QosWmmUpType hddWmmDscpToUpMap[WLAN_MAX_DSCP+1];
 
 #ifdef WLAN_FEATURE_LINK_LAYER_STATS
    v_BOOL_t isLinkLayerStatsSet;
@@ -1148,16 +1174,14 @@ struct hdd_adapter_s
     /* Time stamp for start RoC request */
     v_TIME_t startRocTs;
 
-	/* State for synchronous OCB requests to WMI */
-	struct sir_ocb_set_config_response ocb_set_config_resp;
-	struct sir_ocb_get_tsf_timer_response ocb_get_tsf_timer_resp;
-	struct sir_dcc_get_stats_response *dcc_get_stats_resp;
-	struct sir_dcc_update_ndl_response dcc_update_ndl_resp;
-
 	/* MAC addresses used for OCB interfaces */
 	tSirMacAddr ocb_mac_address[VOS_MAX_CONCURRENCY_PERSONA];
 	int ocb_mac_addr_count;
 	struct hdd_adapter_pm_context runtime_context;
+
+    /* BITMAP indicating pause reason */
+    uint32_t pause_map;
+    spinlock_t pause_map_lock;
 };
 
 #define WLAN_HDD_GET_STATION_CTX_PTR(pAdapter) (&(pAdapter)->sessionCtx.station)
@@ -1485,9 +1509,7 @@ struct hdd_context_s
    /* Thermal mitigation information */
    hdd_thermal_mitigation_info_t tmInfo;
 
-#ifdef WLAN_FEATURE_HOLD_RX_WAKELOCK
    vos_wake_lock_t rx_wake_lock;
-#endif
 
    /*
     * Framework initiated driver restarting
@@ -1736,6 +1758,16 @@ VOS_STATUS hdd_add_adapter_back( hdd_context_t *pHddCtx,
 VOS_STATUS hdd_add_adapter_front( hdd_context_t *pHddCtx,
                                   hdd_adapter_list_node_t* pAdapterNode);
 
+/**
+ * hdd_get_current_vdev_sta_count() - get currnet vdev sta count
+ * @hdd_ctx: hdd context
+ *
+ * Traverse the adapter list to get the vdev sta count
+ *
+ * Return: vdev sta count
+ */
+uint32_t hdd_get_current_vdev_sta_count(hdd_context_t *hdd_ctx);
+
 hdd_adapter_t* hdd_open_adapter( hdd_context_t *pHddCtx, tANI_U8 session_type,
                                  const char* name, tSirMacAddr macAddr,
                                  tANI_U8 rtnl_held );
@@ -1750,7 +1782,6 @@ hdd_adapter_t * hdd_get_adapter_by_name( hdd_context_t *pHddCtx, tANI_U8 *name )
 hdd_adapter_t * hdd_get_adapter_by_vdev( hdd_context_t *pHddCtx,
                                          tANI_U32 vdev_id );
 hdd_adapter_t * hdd_get_adapter_by_macaddr( hdd_context_t *pHddCtx, tSirMacAddr macAddr );
-hdd_adapter_t * hdd_get_mon_adapter( hdd_context_t *pHddCtx );
 VOS_STATUS hdd_init_station_mode( hdd_adapter_t *pAdapter );
 hdd_adapter_t * hdd_get_adapter( hdd_context_t *pHddCtx, device_mode_t mode );
 void hdd_deinit_adapter(hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter,
@@ -1769,7 +1800,6 @@ void wlan_hdd_enable_deepsleep(v_VOID_t * pVosContext);
 v_BOOL_t hdd_is_suspend_notify_allowed(hdd_context_t* pHddCtx);
 void hdd_abort_mac_scan(hdd_context_t* pHddCtx, tANI_U8 sessionId,
                         eCsrAbortReason reason);
-void wlan_hdd_set_monitor_tx_adapter( hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter );
 void hdd_cleanup_actionframe( hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter );
 
 void crda_regulatory_entry_default(v_U8_t *countryCode, int domain_id);
@@ -1879,6 +1909,7 @@ void hdd_wlan_green_ap_start_bss(hdd_context_t *hdd_ctx);
 void hdd_wlan_green_ap_stop_bss(struct hdd_context_s *hdd_ctx);
 void hdd_wlan_green_ap_add_sta(struct hdd_context_s *hdd_ctx);
 void hdd_wlan_green_ap_del_sta(struct hdd_context_s *hdd_ctx);
+int hdd_wlan_enable_egap(struct hdd_context_s *hdd_ctx);
 #else
 static inline void hdd_wlan_green_ap_init(struct hdd_context_s *hdd_ctx) {}
 static inline void hdd_wlan_green_ap_deinit(struct hdd_context_s *hdd_ctx) {}
@@ -1886,14 +1917,13 @@ static inline void hdd_wlan_green_ap_start_bss(hdd_context_t *hdd_ctx) {}
 static inline void hdd_wlan_green_ap_stop_bss(struct hdd_context_s *hdd_ctx) {}
 static inline void hdd_wlan_green_ap_add_sta(struct hdd_context_s *hdd_ctx) {}
 static inline void hdd_wlan_green_ap_del_sta(struct hdd_context_s *hdd_ctx) {}
+static inline int hdd_wlan_enable_egap(struct hdd_context_s *hdd_ctx) {
+    return -EINVAL;
+}
 #endif
 
 #ifdef WLAN_FEATURE_STATS_EXT
 void wlan_hdd_cfg80211_stats_ext_init(hdd_context_t *pHddCtx);
-#endif
-
-#ifdef WLAN_FEATURE_LINK_LAYER_STATS
-void wlan_hdd_cfg80211_link_layer_stats_init(hdd_context_t *pHddCtx);
 #endif
 
 void hdd_update_macaddr(hdd_config_t *cfg_ini, v_MACADDR_t hw_macaddr);
@@ -1943,12 +1973,27 @@ static inline void hdd_init_ll_stats_ctx(hdd_context_t *hdd_ctx)
 
 	return;
 }
+
+/**
+ * wlan_hdd_cfg80211_link_layer_stats_init() - Initialize llstats callbacks
+ * @pHddCtx: HDD context
+ *
+ * Return: none
+ */
+void wlan_hdd_cfg80211_link_layer_stats_init(hdd_context_t *pHddCtx);
+
 #else
 static inline bool hdd_link_layer_stats_supported(void)
 {
 	return false;
 }
+
 static inline void hdd_init_ll_stats_ctx(hdd_context_t *hdd_ctx)
+{
+	return;
+}
+
+void wlan_hdd_cfg80211_link_layer_stats_init(hdd_context_t *pHddCtx)
 {
 	return;
 }
@@ -2027,4 +2072,22 @@ void
 hdd_get_ibss_peer_info_cb(v_VOID_t *pUserData,
                                     tSirPeerInfoRspParams *pPeerInfo);
 
+int hdd_reassoc(hdd_adapter_t *pAdapter, const tANI_U8 *bssid,
+		const tANI_U8 channel, const handoff_src src);
+
+void wlan_hdd_undo_acs(hdd_adapter_t *adapter);
+
+/**
+ * hdd_drv_cmd_validate() - Validates for space in hdd driver command
+ * @command: pointer to input data (its a NULL terminated string)
+ * @len: length of command name
+ *
+ * This function checks for space after command name and if no space
+ * is found returns error.
+ *
+ * Return: 0 for success non-zero for failure
+ */
+int hdd_drv_cmd_validate(tANI_U8 *command, int len);
+void hdd_decide_dynamic_chain_mask(hdd_context_t *hdd_ctx,
+				enum antenna_mode forced);
 #endif    // end #if !defined( WLAN_HDD_MAIN_H )

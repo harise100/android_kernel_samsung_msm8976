@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2014, 2016-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -898,6 +898,14 @@ WLANTL_ClearSTAClient
   v_PVOID_t        pvosGCtx,
   v_U8_t           ucSTAId
 );
+
+/*===========================================================================
+ * tl_shim_flush_cache_rx_queue() - flush cache rx queue frame
+ *
+ *
+ * Return: None
+ ============================================================================*/
+void tl_shim_flush_cache_rx_queue(void);
 
 /*===========================================================================
 
@@ -2617,7 +2625,7 @@ void WLANTL_PauseUnPauseQs(void *vos_context, v_BOOL_t flag);
  * HDD will call this API to get the OL-TXRX module stats
  *
  */
-void WLANTL_Get_llStats
+VOS_STATUS WLANTL_Get_llStats
 (
   v_U8_t sessionId,
   char *buffer,
@@ -2768,12 +2776,15 @@ void WLANTL_SetAdapterMaxQDepth
    int max_q_depth
 );
 #else
-static inline void WLANTL_Get_llStats
+static inline VOS_STATUS WLANTL_Get_llStats
 (
    uint8_t sessionId,
    char *buffer,
    uint16_t length
-) {}
+)
+{
+    return VOS_STATUS_SUCCESS;
+}
 
 #endif /* QCA_LL_TX_FLOW_CT */
 
@@ -2931,4 +2942,16 @@ VOS_STATUS WLANTL_RegisterOCBPeer(void *vos_ctx, uint8_t *mac_addr,
 void WLANTL_display_datapath_stats(void *vos_ctx, uint16_t bitmap);
 void WLANTL_clear_datapath_stats(void *vos_ctx, uint16_t bitmap);
 
+#ifdef QCA_SUPPORT_TXRX_LOCAL_PEER_ID
+/**
+ * tl_shim_get_sta_id_by_addr() - get peer local id given the MAC address.
+ * @vos_context: pointer to vos context
+ * @mac_addr: pointer to mac address
+ *
+ * Return: local id of the peer given the MAC address.
+ */
+uint16_t tl_shim_get_sta_id_by_addr(void *vos_context, uint8_t *mac_addr);
+#else
+#define tl_shim_get_sta_id_by_addr(vos_context,mac_addr) 0
+#endif
 #endif /* #ifndef WLAN_QCT_WLANTL_H */

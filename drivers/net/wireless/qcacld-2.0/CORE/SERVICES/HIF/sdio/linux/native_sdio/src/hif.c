@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -45,6 +45,25 @@
 #define ATH_MODULE_NAME hif
 #include "a_debug.h"
 #include "vos_sched.h"
+
+#define BUS_REQ_RECORD_SIZE 100
+u_int32_t g_bus_req_buf_idx = 0;
+spinlock_t g_bus_request_record_lock;
+
+struct bus_request_record bus_request_record_buf[BUS_REQ_RECORD_SIZE];
+
+#define BUS_REQUEST_RECORD(r, a, l) { \
+	unsigned long flag; \
+	spin_lock_irqsave(&g_bus_request_record_lock, flag); \
+	if (g_bus_req_buf_idx == BUS_REQ_RECORD_SIZE) \
+		g_bus_req_buf_idx = 0; \
+	bus_request_record_buf[g_bus_req_buf_idx].request = r;  \
+	bus_request_record_buf[g_bus_req_buf_idx].address = a;  \
+	bus_request_record_buf[g_bus_req_buf_idx].len = l; \
+	bus_request_record_buf[g_bus_req_buf_idx].time = adf_get_boottime(); \
+	g_bus_req_buf_idx++; \
+	spin_unlock_irqrestore(&g_bus_request_record_lock, flag); \
+}
 
 #if HIF_USE_DMA_BOUNCE_BUFFER
 /* macro to check if DMA buffer is WORD-aligned and DMA-able.  Most host controllers assume the
@@ -122,6 +141,10 @@ module_param(writecccr4value, uint, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 unsigned int modstrength = 0;
 module_param(modstrength, uint, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 MODULE_PARM_DESC(modstrength, "Adjust internal driver strength");
+
+bool dynamic_busreq = 1;
+module_param(dynamic_busreq, bool, S_IRUSR | S_IRGRP | S_IROTH);
+MODULE_PARM_DESC(dynamic_busreq, "Using dynamic bus request");
 
 /* ATHENV */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27) && defined(CONFIG_PM)
@@ -211,39 +234,6 @@ static void hif_sdio_crash_shutdown(struct sdio_func *func);
 static int hif_sdio_device_suspend(struct device *dev);
 static int hif_sdio_device_resume(struct device *dev);
 #endif
-
-#define MBOX_MEM_LOG_DEBUG_MAX_ENTRY (50)
-
-struct mbox_command_debug{
-	u_int32_t address;
-	u_int32_t length;
-        u_int64_t time;
-};
-
-u_int32_t g_mbox_dma_buf_idx = 0;
-struct mbox_command_debug mbox_command_log_buffer[MBOX_MEM_LOG_DEBUG_MAX_ENTRY];
-
-
-#define MBOX_COMMAND_RECORD(a, b) {					\
-	if (MBOX_MEM_LOG_DEBUG_MAX_ENTRY <= g_mbox_dma_buf_idx)		\
-		g_mbox_dma_buf_idx = 0;				\
-	mbox_command_log_buffer[g_mbox_dma_buf_idx].address = a;	\
-	mbox_command_log_buffer[g_mbox_dma_buf_idx].length =  b;	\
-        mbox_command_log_buffer[g_mbox_dma_buf_idx].time = adf_get_boottime(); \
-        g_mbox_dma_buf_idx++;     \
-}
-
-void hif_dump_current_dma_addr(void)
-{
-        if(g_mbox_dma_buf_idx)
-		pr_err(" index %u address 0x%X length %u time %llu \n",
-		       g_mbox_dma_buf_idx - 1,
-                 mbox_command_log_buffer[g_mbox_dma_buf_idx-1].address,
-                 mbox_command_log_buffer[g_mbox_dma_buf_idx-1].length,
-                 mbox_command_log_buffer[g_mbox_dma_buf_idx-1].time);
-}
-
-
 
 static struct cnss_sdio_wlan_driver ar6k_driver = {
 	.name = "ar6k_wlan",
@@ -384,7 +374,7 @@ __HIFReadWrite(HIF_DEVICE *device,
 {
     A_UINT8 opcode;
     A_STATUS    status = A_OK;
-    int     ret;
+    int ret = 0;
     A_UINT8 *tbuffer;
     A_BOOL   bounced = FALSE;
 
@@ -458,7 +448,6 @@ __HIFReadWrite(HIF_DEVICE *device,
             AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
                     ("address:%08X, Length:0x%08X, Dummy:0x%04X, Final:0x%08X\n", address, length, (request & HIF_DUMMY_SPACE_MASK) >> 16, mboxLength == 0 ? address : address + (mboxLength - length)));
             if (mboxLength != 0) {
-                A_UINT32 addr = address;
                 if (length > mboxLength) {
                     AR_DEBUG_PRINTF(ATH_DEBUG_ERROR,
                             ("HIFReadWrite: written length(0x%08X) "
@@ -472,8 +461,6 @@ __HIFReadWrite(HIF_DEVICE *device,
                  */
                 address += ((request & HIF_DUMMY_SPACE_MASK) >> 16);
 #endif
-		if (addr == MailBoxInfo.MboxProp[1].ExtendedAddress)
-                    MBOX_COMMAND_RECORD(address, length);
                 }
             }
 
@@ -648,7 +635,7 @@ HIFReadWrite(HIF_DEVICE *device,
     if (device == NULL || device->func == NULL)
         return A_ERROR;
     AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
-        ("AR6000: device 0x%p addr 0x%X buffer 0x%p len %d req 0x%X context 0x%p",
+        ("AR6000: device 0x%pK addr 0x%X buffer 0x%pK len %d req 0x%X context 0x%pK",
         device, address, buffer, length, request, context));
 
     /*sdio r/w action is not needed when suspend with cut power,so just return*/
@@ -663,10 +650,11 @@ HIFReadWrite(HIF_DEVICE *device,
                         (request & HIF_ASYNCHRONOUS)?"Async":"Synch"));
             busrequest = hifAllocateBusRequest(device);
             if (busrequest == NULL) {
-                AR_DEBUG_PRINTF(ATH_DEBUG_ERROR,
+                AR_DEBUG_PRINTF(ATH_DEBUG_INFO,
                     ("AR6000: no async bus requests available (%s, addr:0x%X, len:%d) \n",
                         request & HIF_READ ? "READ":"WRITE", address, length));
-                return A_ERROR;
+                BUS_REQUEST_RECORD(request, address, length);
+                return A_ECANCELED;
             }
             busrequest->address = address;
             busrequest->buffer = buffer;
@@ -840,6 +828,7 @@ static int tx_completion_task(void *param)
  */
 static inline void tx_completion_sem_init(HIF_DEVICE *device)
 {
+	spin_lock_init(&device->tx_completion_lock);
 	sema_init(&device->sem_tx_completion, 0);
 }
 
@@ -978,6 +967,7 @@ static int async_task(void *param)
     A_STATUS status;
     unsigned long flags;
 
+    set_user_nice(current, -3);
     device = (HIF_DEVICE *)param;
     AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: async task\n"));
     set_current_state(TASK_INTERRUPTIBLE);
@@ -1418,7 +1408,7 @@ HIFShutDownDevice(HIF_DEVICE *device)
         for (i=0; i<MAX_HIF_DEVICES; ++i) {
             if (hif_devices[i] && hif_devices[i]->func == NULL) {
                 AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
-                                ("AR6000: Remove pending hif_device %p\n", hif_devices[i]));
+                                ("AR6000: Remove pending hif_device %pK\n", hif_devices[i]));
                 delHifDevice(hif_devices[i]);
                 hif_devices[i] = NULL;
             }
@@ -1443,6 +1433,30 @@ hifIRQHandler(struct sdio_func *func)
     atomic_set(&device->irqHandling, 0);
     AR_DEBUG_ASSERT(status == A_OK || status == A_ECANCELED);
     AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: -hifIRQHandler\n"));
+}
+
+/**
+ * hif_oob_irq_handler() - irq handler for OOB
+ * @dev_para: SDIO function devices.
+ *
+ * This is the SDIO OOB interrupt handler.
+ * A GPIO pin is used as an out-of-band interrupt source to gain
+ * better performance,
+ *
+ * Return: None.
+ */
+static void hif_oob_irq_handler(void *dev_para)
+{
+	A_STATUS status;
+	HIF_DEVICE *device;
+
+	AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: +hif_oob_irq_handler\n"));
+	device = getHifDevice(dev_para);
+	atomic_set(&device->irqHandling, 1);
+	status = device->htcCallbacks.dsrHandler(device->htcCallbacks.context);
+	atomic_set(&device->irqHandling, 0);
+	AR_DEBUG_ASSERT(status == A_OK || status == A_ECANCELED);
+	AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: -hif_oob_irq_handler\n"));
 }
 
 #ifdef HIF_MBOX_SLEEP_WAR
@@ -1502,19 +1516,14 @@ static int hifDeviceInserted(struct sdio_func *func, const struct sdio_device_id
     int i;
     int ret;
     HIF_DEVICE * device = NULL;
-    int count;
 
     AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
             ("AR6000: hifDeviceInserted, Function: 0x%X, Vendor ID: 0x%X, Device ID: 0x%X, block size: 0x%X/0x%X\n",
              func->num, func->vendor, id->device, func->max_blksize, func->cur_blksize));
-    /*
-    dma_mask should not be NULL, otherwise dma_map_single will crash.
-    TODO: check why dma_mask is NULL here
-    */
-    if (func->dev.dma_mask == NULL){
-        static u64 dma_mask = 0xFFFFFFFF;
-        func->dev.dma_mask = &dma_mask;
-    }
+
+    /* dma_mask should be populated here. Use the parent device's setting. */
+    func->dev.dma_mask = mmc_dev(func->card->host)->dma_mask;
+
     for (i=0; i<MAX_HIF_DEVICES; ++i) {
         HIF_DEVICE *hifdevice = hif_devices[i];
         if (hifdevice && hifdevice->powerConfig == HIF_DEVICE_POWER_CUT &&
@@ -1546,7 +1555,7 @@ static int hifDeviceInserted(struct sdio_func *func, const struct sdio_device_id
         }
         if (i==MAX_HIF_DEVICES) {
             AR_DEBUG_PRINTF(ATH_DEBUG_ERROR,
-                ("AR6000: hifDeviceInserted, No more hif_devices[] slot for %p", device));
+                ("AR6000: hifDeviceInserted, No more hif_devices[] slot for %pK", device));
         }
 
         device->id = id;
@@ -1749,9 +1758,8 @@ TODO: MMC SDIO3.0 Setting should also be modified in ReInit() function when Powe
             sdio_release_host(func);
         }
 
-        spin_lock_init(&device->lock);
-
         spin_lock_init(&device->asynclock);
+        spin_lock_init(&g_bus_request_record_lock);
 
         DL_LIST_INIT(&device->ScatterReqHead);
 
@@ -1763,11 +1771,15 @@ TODO: MMC SDIO3.0 Setting should also be modified in ReInit() function when Powe
         else
             device->scatter_enabled = FALSE;
 
-        /* Initialize the bus requests to be used later */
-        A_MEMZERO(device->busRequest, sizeof(device->busRequest));
-        for (count = 0; count < BUS_REQUEST_MAX_NUM; count ++) {
-            sema_init(&device->busRequest[count].sem_req, 0);
-            hifFreeBusRequest(device, &device->busRequest[count]);
+        if (!dynamic_busreq) {
+            int count;
+
+            /* Initialize the bus requests to be used later */
+            A_MEMZERO(device->busRequest, sizeof(device->busRequest));
+            for (count = 0; count < BUS_REQUEST_MAX_NUM; count ++) {
+                sema_init(&device->busRequest[count].sem_req, 0);
+                hifFreeBusRequest(device, &device->busRequest[count]);
+            }
         }
         sema_init(&device->sem_async, 0);
         tx_completion_sem_init(device);
@@ -1780,7 +1792,19 @@ TODO: MMC SDIO3.0 Setting should also be modified in ReInit() function when Powe
 #endif
 
     ret = hifEnableFunc(device, func);
-    return (ret == A_OK || ret == A_PENDING) ? 0 : -1;
+    if (ret == A_OK || ret == A_PENDING) {
+        return 0;
+    } else {
+        for (i = 0; i < MAX_HIF_DEVICES; ++i) {
+            if (hif_devices[i] == device) {
+                hif_devices[i] = NULL;
+                break;
+            }
+        }
+        sdio_set_drvdata(func, NULL);
+        delHifDevice(device);
+        return -1;
+    }
 }
 
 
@@ -1812,7 +1836,11 @@ HIFUnMaskInterrupt(HIF_DEVICE *device)
     }
     /* Register the IRQ Handler */
     sdio_claim_host(device->func);
-    ret = sdio_claim_irq(device->func, hifIRQHandler);
+    if (false == vos_oob_enabled())
+        ret = sdio_claim_irq(device->func, hifIRQHandler);
+    else
+        ret = vos_register_oob_irq_handler(hif_oob_irq_handler,
+                                device->func);
     sdio_release_host(device->func);
     AR_DEBUG_ASSERT(ret == 0);
     EXIT();
@@ -1833,7 +1861,12 @@ void HIFMaskInterrupt(HIF_DEVICE *device)
         schedule_timeout_interruptible(HZ/10);
         sdio_claim_host(device->func);
     }
-    ret = sdio_release_irq(device->func);
+
+    if (false == vos_oob_enabled())
+        ret = sdio_release_irq(device->func);
+    else
+        ret = vos_unregister_oob_irq_handler(device->func);
+
     sdio_release_host(device->func);
     if (ret) {
         if (ret == -ETIMEDOUT) {
@@ -1846,6 +1879,27 @@ void HIFMaskInterrupt(HIF_DEVICE *device)
         }
     }
     EXIT();
+}
+
+void hif_release_bus_requests(HIF_DEVICE *device)
+{
+	BUS_REQUEST *bus_req;
+	unsigned long  flag;
+
+	AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
+			("AR6000: Release busrequest queue\n"));
+	spin_lock_irqsave(&device->lock, flag);
+
+	while ((bus_req = device->s_busRequestFreeQueue) != NULL) {
+		device->s_busRequestFreeQueue = bus_req->next;
+		spin_unlock_irqrestore(&device->lock, flag);
+
+		A_FREE(bus_req);
+
+		spin_lock_irqsave(&device->lock, flag);
+	}
+
+	spin_unlock_irqrestore(&device->lock, flag);
 }
 
 BUS_REQUEST *hifAllocateBusRequest(HIF_DEVICE *device)
@@ -1863,7 +1917,17 @@ BUS_REQUEST *hifAllocateBusRequest(HIF_DEVICE *device)
     }
     /* Release lock */
     spin_unlock_irqrestore(&device->lock, flag);
-    AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: hifAllocateBusRequest: 0x%p\n", busrequest));
+
+    if (adf_os_unlikely(!busrequest) && dynamic_busreq) {
+        AR_DEBUG_PRINTF(ATH_DEBUG_ERROR,
+                        ("AR6000: No busrequest in free queue\n"));
+        busrequest = (BUS_REQUEST *)A_MALLOC(sizeof(*busrequest));
+        if (busrequest) {
+            A_MEMZERO(busrequest, sizeof(*busrequest));
+            sema_init(&busrequest->sem_req, 0);
+        }
+    }
+    AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: hifAllocateBusRequest: 0x%pK\n", busrequest));
     return busrequest;
 }
 
@@ -1874,7 +1938,7 @@ hifFreeBusRequest(HIF_DEVICE *device, BUS_REQUEST *busrequest)
 
     if (busrequest == NULL)
        return;
-    //AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: hifFreeBusRequest: 0x%p\n", busrequest));
+    //AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: hifFreeBusRequest: 0x%pK\n", busrequest));
     /* Acquire lock */
     spin_lock_irqsave(&device->lock, flag);
 
@@ -1948,10 +2012,15 @@ static A_STATUS hifEnableFunc(HIF_DEVICE *device, struct sdio_func *func)
 {
     int ret = A_OK;
 
-    ENTER("sdio_func 0x%p", func);
+    ENTER("sdio_func 0x%pK", func);
 
     AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: +hifEnableFunc\n"));
     device = getHifDevice(func);
+
+    if (!device) {
+        AR_DEBUG_PRINTF(ATH_DEBUG_ERR, ("HIF device is NULL\n"));
+        return A_EINVAL;
+    }
 
     if (device->is_disabled) {
         int setAsyncIRQ = 0;
@@ -2069,16 +2138,23 @@ static A_STATUS hifEnableFunc(HIF_DEVICE *device, struct sdio_func *func)
         ret = osdrvCallbacks.deviceInsertedHandler(
             osdrvCallbacks.context,device);
         /* start  up inform DRV layer */
-        if (ret != A_OK)
+        if (ret != A_OK) {
             AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
                 ("AR6k: Device rejected error:%d \n", ret));
+            /*
+             * Disable the SDIO func & Reset the sdio
+             * for automated tests to move ahead, where
+             * the card does not need to be removed at
+             * the end of the test.
+             */
+            hifDisableFunc(device, func);
+        }
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,27) && defined(CONFIG_PM)
     } else {
         AR_DEBUG_PRINTF(ATH_DEBUG_TRACE,
              ("AR6k: call devicePwrChangeApi\n"));
         /* start  up inform DRV layer */
-        if (device &&
-            device->claimedContext &&
+        if (device->claimedContext &&
             osdrvCallbacks.devicePowerChangeHandler &&
             ((ret = osdrvCallbacks.devicePowerChangeHandler(
                   device->claimedContext, HIF_DEVICE_POWER_UP)) != A_OK))
@@ -2473,6 +2549,7 @@ A_STATUS hifWaitForPendingRecv(HIF_DEVICE *device)
 static HIF_DEVICE *
 addHifDevice(struct sdio_func *func)
 {
+    int count;
     HIF_DEVICE *hifdevice = NULL;
 #if(LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)) && !defined(WITH_BACKPORTS)
     int ret = 0;
@@ -2496,6 +2573,29 @@ addHifDevice(struct sdio_func *func)
     hifdevice->func = func;
     hifdevice->powerConfig = HIF_DEVICE_POWER_UP;
     hifdevice->DeviceState = HIF_DEVICE_STATE_ON;
+    spin_lock_init(&hifdevice->lock);
+
+    if (dynamic_busreq) {
+        for (count = 0; count < BUS_REQUEST_MAX_NUM; count++) {
+            BUS_REQUEST *busrequest;
+            busrequest = A_MALLOC(sizeof(*busrequest));
+            if (!busrequest)
+                break;
+            A_MEMZERO(busrequest, sizeof(*busrequest));
+            sema_init(&busrequest->sem_req, 0);
+            hifFreeBusRequest(hifdevice, busrequest);
+        }
+
+        if (!count) {
+            printk(KERN_ERR"AR6000:No bus request resources\n");
+            if (hifdevice->dma_buffer)
+                A_FREE(hifdevice->dma_buffer);
+            A_FREE(hifdevice);
+            EXIT();
+            return NULL;
+        }
+    }
+
 #if(LINUX_VERSION_CODE < KERNEL_VERSION(3,15,0)) && !defined(WITH_BACKPORTS)
     ret = sdio_set_drvdata(func, hifdevice);
     EXIT("status %d", ret);
@@ -2518,7 +2618,11 @@ delHifDevice(HIF_DEVICE * device)
 {
     if (device == NULL)
         return;
-    AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: delHifDevice; 0x%p\n", device));
+    AR_DEBUG_PRINTF(ATH_DEBUG_TRACE, ("AR6000: delHifDevice; 0x%pK\n", device));
+
+    if (dynamic_busreq)
+        hif_release_bus_requests(device);
+
     if (device->dma_buffer != NULL) {
         A_FREE(device->dma_buffer);
     }
@@ -2748,12 +2852,23 @@ static int hif_sdio_device_inserted(struct sdio_func *func, const struct sdio_de
 
 static void hif_sdio_device_removed(struct sdio_func *func)
 {
-	if (func != NULL)
-		hifDeviceRemoved(func);
+	HIF_DEVICE * device = NULL;
+
+	if (func != NULL) {
+		device = getHifDevice(func);
+		if (device != NULL)
+			hifDeviceRemoved(func);
+	}
 }
 
 static int hif_sdio_device_reinit(struct sdio_func *func, const struct sdio_device_id * id)
 {
+	if (vos_is_load_unload_in_progress(VOS_MODULE_ID_HIF, NULL) &&
+	    !vos_is_logp_in_progress(VOS_MODULE_ID_VOSS, NULL)) {
+		printk("%s: Load/unload is in progress and SSR is not,"
+		       "ignore SSR reinit...\n", __func__);
+		return 0;
+	}
 	if ((func != NULL) && (id != NULL))
 		return hifDeviceInserted(func, id);
 	else
@@ -2765,6 +2880,11 @@ static int hif_sdio_device_reinit(struct sdio_func *func, const struct sdio_devi
 static void hif_sdio_device_shutdown(struct sdio_func *func)
 {
 	vos_set_logp_in_progress(VOS_MODULE_ID_HIF, TRUE);
+	if (vos_is_load_unload_in_progress(VOS_MODULE_ID_HIF, NULL)) {
+		vos_set_logp_in_progress(VOS_MODULE_ID_HIF, FALSE);
+		printk("Load/unload in progress, ignore SSR shutdown\n");
+		return;
+	}
 	vos_set_shutdown_in_progress(VOS_MODULE_ID_HIF, TRUE);
 	if (!vos_is_ssr_ready(__func__))
 		pr_err(" %s Host driver is not ready for SSR, attempting anyway\n", __func__);
@@ -2789,6 +2909,9 @@ static int hif_sdio_device_resume(struct device *dev)
 	return hifDeviceResume(dev);
 }
 
+#endif
+#endif
+
 /**
  * hif_set_target_reset() - Reset target device
  * @hif_device: pointer to hif_device structure
@@ -2810,5 +2933,3 @@ int hif_set_target_reset(HIF_DEVICE *hif_device)
 
 	return 0;
 }
-#endif
-#endif

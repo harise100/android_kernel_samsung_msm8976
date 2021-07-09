@@ -1288,8 +1288,8 @@ limSendSmeLfrScanRsp(tpAniSirGlobal pMac, tANI_U16 length,
                  &pMac->roam.roamSession[smesessionId].connectedProfile.SSID);
     PELOG2(limLog(pMac,
                   LOG2,
-                  FL("Scan Entries Left after cleanup: %d",
-                     scanEntriesLeft)));
+                  FL("Scan Entries Left after cleanup: %d"),
+                     scanEntriesLeft);)
 
     return;
 
@@ -1400,14 +1400,28 @@ void limSendSmeOemDataRsp(tpAniSirGlobal pMac, tANI_U32* pMsgBuf, tSirResultCode
     //get the pointer to the mlm message
     pMlmOemDataRsp = (tLimMlmOemDataRsp*)(pMsgBuf);
 
-    msgLength = sizeof(tSirOemDataRsp);
+    msgLength = sizeof(*pSirSmeOemDataRsp);
 
     //now allocate memory for the char buffer
     pSirSmeOemDataRsp = vos_mem_malloc(msgLength);
     if (NULL == pSirSmeOemDataRsp)
     {
-        limLog(pMac, LOGP, FL("call to AllocateMemory failed for pSirSmeOemDataRsp"));
+        limLog(pMac, LOGP, FL("malloc failed for pSirSmeOemDataRsp"));
+        vos_mem_free(pMlmOemDataRsp->oem_data_rsp);
+        vos_mem_free(pMlmOemDataRsp);
         return;
+    }
+
+    if (pMlmOemDataRsp->rsp_len) {
+        pSirSmeOemDataRsp->oem_data_rsp =
+                vos_mem_malloc(pMlmOemDataRsp->rsp_len);
+        if (!pSirSmeOemDataRsp->oem_data_rsp) {
+            limLog(pMac, LOGE, FL("malloc failed for oem_data_rsp"));
+            vos_mem_free(pSirSmeOemDataRsp);
+            vos_mem_free(pMlmOemDataRsp->oem_data_rsp);
+            vos_mem_free(pMlmOemDataRsp);
+            return;
+        }
     }
 
 #if defined (ANI_LITTLE_BYTE_ENDIAN)
@@ -1418,10 +1432,22 @@ void limSendSmeOemDataRsp(tpAniSirGlobal pMac, tANI_U32* pMsgBuf, tSirResultCode
     pSirSmeOemDataRsp->messageType = eWNI_SME_OEM_DATA_RSP;
 #endif
     pSirSmeOemDataRsp->target_rsp = pMlmOemDataRsp->target_rsp;
-    vos_mem_copy(pSirSmeOemDataRsp->oemDataRsp, pMlmOemDataRsp->oemDataRsp, OEM_DATA_RSP_SIZE);
+    pSirSmeOemDataRsp->rsp_len = pMlmOemDataRsp->rsp_len;
+    vos_mem_copy(pSirSmeOemDataRsp->oem_data_rsp,
+                 pMlmOemDataRsp->oem_data_rsp,
+                 pSirSmeOemDataRsp->rsp_len);
 
-    //Now free the memory from MLM Rsp Message
+    /*
+     * Now free the memory from MLM Rsp Message
+     *
+     * Free oem_data_rsp only if rsp is from target
+     */
+    if (pMlmOemDataRsp->target_rsp && pMlmOemDataRsp->oem_data_rsp) {
+        vos_mem_free(pMlmOemDataRsp->oem_data_rsp);
+        pMlmOemDataRsp->oem_data_rsp = NULL;
+    }
     vos_mem_free(pMlmOemDataRsp);
+    pMlmOemDataRsp = NULL;
 
     mmhMsg.type = eWNI_SME_OEM_DATA_RSP;
     mmhMsg.bodyptr = pSirSmeOemDataRsp;
@@ -1491,6 +1517,7 @@ limSendSmeDisassocNtf(tpAniSirGlobal pMac,
     tANI_U8                     *pBuf;
     tSirSmeDisassocRsp      *pSirSmeDisassocRsp;
     tSirSmeDisassocInd      *pSirSmeDisassocInd;
+    tSirSmeDisConDoneInd    *pSirSmeDisConDoneInd;
     tANI_U32 *pMsg;
     bool failure = false;
 
@@ -1501,12 +1528,6 @@ limSendSmeDisassocNtf(tpAniSirGlobal pMac,
 
     switch (disassocTrigger)
     {
-        case eLIM_PEER_ENTITY_DISASSOC:
-            if (reasonCode != eSIR_SME_STA_NOT_ASSOCIATED) {
-                failure = true;
-                goto error;
-            }
-
         case eLIM_HOST_DISASSOC:
             /**
              * Disassociation response due to
@@ -1556,6 +1577,41 @@ limSendSmeDisassocNtf(tpAniSirGlobal pMac,
                                       psessionEntry, (tANI_U16)reasonCode, 0);
 #endif
             pMsg = (tANI_U32*) pSirSmeDisassocRsp;
+            break;
+
+        case eLIM_PEER_ENTITY_DISASSOC:
+        case eLIM_LINK_MONITORING_DISASSOC:
+            pSirSmeDisConDoneInd =
+                                  vos_mem_malloc(sizeof(tSirSmeDisConDoneInd));
+            if ( NULL == pSirSmeDisConDoneInd )
+            {
+                /* Log error */
+                limLog(pMac, LOGP,
+                       FL("call to AllocateMemory failed for"
+                          "disconnect indication"));
+                return;
+            }
+            vos_mem_zero(pSirSmeDisConDoneInd, sizeof(tSirSmeDisConDoneInd));
+            limLog(pMac, LOG1,
+                   FL("send  eWNI_SME_DISCONNECT_DONE_IND with retCode: %d"),
+                   reasonCode);
+            pSirSmeDisConDoneInd->messageType = eWNI_SME_DISCONNECT_DONE_IND;
+            pSirSmeDisConDoneInd->length      = sizeof(tSirSmeDisConDoneInd);
+            vos_mem_copy(pSirSmeDisConDoneInd->peerMacAddr, peerMacAddr,
+                         sizeof(tSirMacAddr));
+            pSirSmeDisConDoneInd->sessionId   = smesessionId;
+
+            /*
+             * Instead of sending deauth reason code as 505 which is internal
+             * value to driver(eSIR_SME_LOST_LINK_WITH_PEER_RESULT_CODE).
+             * Send reason code as zero to Supplicant
+             */
+            if (reasonCode == eSIR_SME_LOST_LINK_WITH_PEER_RESULT_CODE)
+                pSirSmeDisConDoneInd->reasonCode = 0;
+            else
+                pSirSmeDisConDoneInd->reasonCode = reasonCode;
+
+            pMsg = (tANI_U32 *)pSirSmeDisConDoneInd;
             break;
 
         default:
@@ -1648,7 +1704,7 @@ limSendSmeDisassocInd(tpAniSirGlobal pMac, tpDphHashNode pStaDs,tpPESession pses
 
     pSirSmeDisassocInd->sessionId     =  psessionEntry->smeSessionId;
     pSirSmeDisassocInd->transactionId =  psessionEntry->transactionId;
-    pSirSmeDisassocInd->statusCode    =  pStaDs->mlmStaContext.disassocReason;
+    pSirSmeDisassocInd->statusCode    =  eSIR_SME_DEAUTH_STATUS;
     pSirSmeDisassocInd->reasonCode    =  pStaDs->mlmStaContext.disassocReason;
 
     vos_mem_copy( pSirSmeDisassocInd->bssId, psessionEntry->bssId, sizeof(tSirMacAddr));
@@ -1954,6 +2010,7 @@ limSendSmeDeauthNtf(tpAniSirGlobal pMac, tSirMacAddr peerMacAddr, tSirResultCode
     tANI_U8             *pBuf;
     tSirSmeDeauthRsp    *pSirSmeDeauthRsp;
     tSirSmeDeauthInd    *pSirSmeDeauthInd;
+    tSirSmeDisConDoneInd *pSirSmeDisConDoneInd;
     tpPESession         psessionEntry;
     tANI_U8             sessionId;
     tANI_U32            *pMsg;
@@ -1961,9 +2018,6 @@ limSendSmeDeauthNtf(tpAniSirGlobal pMac, tSirMacAddr peerMacAddr, tSirResultCode
     psessionEntry = peFindSessionByBssid(pMac,peerMacAddr,&sessionId);
     switch (deauthTrigger)
     {
-        case eLIM_PEER_ENTITY_DEAUTH:
-            return;
-
         case eLIM_HOST_DEAUTH:
             /**
              * Deauthentication response to host triggered
@@ -1995,6 +2049,42 @@ limSendSmeDeauthNtf(tpAniSirGlobal pMac, tSirMacAddr peerMacAddr, tSirResultCode
                                       psessionEntry, 0, (tANI_U16)reasonCode);
 #endif
             pMsg = (tANI_U32*)pSirSmeDeauthRsp;
+
+            break;
+
+        case eLIM_PEER_ENTITY_DEAUTH:
+        case eLIM_LINK_MONITORING_DEAUTH:
+            pSirSmeDisConDoneInd =
+                                vos_mem_malloc(sizeof(tSirSmeDisConDoneInd));
+            if ( NULL == pSirSmeDisConDoneInd )
+            {
+                /* Log error */
+                limLog(pMac, LOGP,
+                       FL("call to AllocateMemory failed for"
+                          "disconnect indication"));
+                return;
+            }
+
+            vos_mem_zero(pSirSmeDisConDoneInd, sizeof(tSirSmeDisConDoneInd));
+            limLog(pMac, LOG1,
+                   FL("send  eWNI_SME_DISCONNECT_DONE_IND withretCode: %d"),
+                   reasonCode);
+            pSirSmeDisConDoneInd->messageType = eWNI_SME_DISCONNECT_DONE_IND;
+            pSirSmeDisConDoneInd->length      = sizeof(tSirSmeDisConDoneInd);
+            pSirSmeDisConDoneInd->sessionId   = smesessionId;
+
+            /*
+             * Instead of sending deauth reason code as 505 which is internal
+             * value to driver(eSIR_SME_LOST_LINK_WITH_PEER_RESULT_CODE).
+             * Send reason code as zero to Supplicant
+             */
+            if (reasonCode == eSIR_SME_LOST_LINK_WITH_PEER_RESULT_CODE)
+                pSirSmeDisConDoneInd->reasonCode = 0;
+            else
+                pSirSmeDisConDoneInd->reasonCode = reasonCode;
+            pMsg = (tANI_U32 *)pSirSmeDisConDoneInd;
+            vos_mem_copy(pSirSmeDisConDoneInd->peerMacAddr, peerMacAddr,
+                         sizeof(tSirMacAddr));
 
             break;
 
@@ -2956,7 +3046,7 @@ void limHandleCSAoffloadMsg(tpAniSirGlobal pMac,tpSirMsgQ MsgQ)
                                                  psessionEntry,
                                                  csa_params->channel,
                                                  csa_params->new_ch_width);
-          if (psessionEntry->gLimChannelSwitch.secondarySubBand) {
+          if (psessionEntry->gLimChannelSwitch.secondarySubBand > 0) {
               psessionEntry->gLimChannelSwitch.state =
                                      eLIM_CHANNEL_SWITCH_PRIMARY_AND_SECONDARY;
           }
@@ -3010,6 +3100,7 @@ void limHandleDeleteBssRsp(tpAniSirGlobal pMac,tpSirMsgQ MsgQ)
     {
         limLog(pMac, LOGE,FL("Session Does not exist for given sessionID %d"),
           pDelBss->sessionId);
+        vos_mem_free(MsgQ->bodyptr);
         return;
     }
     if (LIM_IS_IBSS_ROLE(psessionEntry)) {
@@ -3133,7 +3224,10 @@ void limSendSmeMaxAssocExceededNtf(tpAniSirGlobal pMac, tSirMacAddr peerMacAddr,
     mmhMsg.type = pSmeMaxAssocInd->mesgType;
     mmhMsg.bodyptr = pSmeMaxAssocInd;
     PELOG1(limLog(pMac, LOG1, FL("msgType %s peerMacAddr "MAC_ADDRESS_STR
-                  " sme session id %d"), "eWNI_SME_MAX_ASSOC_EXCEEDED", MAC_ADDR_ARRAY(peerMacAddr));)
+                  " sme session id %d"),
+                  "eWNI_SME_MAX_ASSOC_EXCEEDED",
+                  MAC_ADDR_ARRAY(peerMacAddr),
+                  smesessionId);)
     MTRACE(macTraceMsgTx(pMac, smesessionId, mmhMsg.type));
     limSysProcessMmhMsgApi(pMac, &mmhMsg, ePROT);
 

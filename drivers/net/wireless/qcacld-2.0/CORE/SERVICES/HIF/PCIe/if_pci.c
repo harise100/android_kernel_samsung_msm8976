@@ -1160,7 +1160,8 @@ static int __hif_pci_runtime_suspend(struct pci_dev *pdev)
 		goto out;
 	}
 
-	if ((test = ol_txrx_get_tx_pending(txrx_pdev))) {
+	if ((test = ol_txrx_get_tx_pending(txrx_pdev)) ||
+		 ol_txrx_get_queue_status(txrx_pdev)) {
 		pr_err("%s: txrx pending(%d), get: %u, put: %u\n", __func__,
 				test,
 				sc->pm_stats.runtime_get,
@@ -1813,8 +1814,10 @@ int hif_pci_reinit(struct pci_dev *pdev, const struct pci_device_id *id)
 again:
     ret = 0;
 
-    if (vos_is_load_unload_in_progress(VOS_MODULE_ID_HIF, NULL)) {
-        printk("Load/unload in progress, ignore SSR reinit\n");
+    if (vos_is_load_unload_in_progress(VOS_MODULE_ID_HIF, NULL) &&
+        !vos_is_logp_in_progress(VOS_MODULE_ID_VOSS, NULL)) {
+        printk("%s: Load/unload is in progress and SSR is not,"
+               "ignore SSR reinit...\n", __func__);
         return 0;
     }
 
@@ -2586,7 +2589,8 @@ __hif_pci_suspend(struct pci_dev *pdev, pm_message_t state, bool runtime_pm)
         goto out;
     }
     /* Wait for pending tx completion */
-    while (ol_txrx_get_tx_pending(txrx_pdev)) {
+    while (ol_txrx_get_tx_pending(txrx_pdev) ||
+           ol_txrx_get_queue_status(txrx_pdev)) {
         msleep(OL_ATH_TX_DRAIN_WAIT_DELAY);
         if (++tx_drain_wait_cnt > OL_ATH_TX_DRAIN_WAIT_CNT) {
             printk("%s: tx frames are pending\n", __func__);
@@ -2644,7 +2648,7 @@ __hif_pci_suspend(struct pci_dev *pdev, pm_message_t state, bool runtime_pm)
             goto out;
         }
 
-        pr_info("%s: Suspend completes (D0WOW)\n", __func__);
+        pr_debug("%s: Suspend completes (D0WOW)\n", __func__);
         ret = 0;
         goto out;
     }
@@ -2697,11 +2701,11 @@ __hif_pci_suspend(struct pci_dev *pdev, pm_message_t state, bool runtime_pm)
     }
 
 skip:
-    pr_info("%s: Suspend completes%s in%s mode event:%d device_state:%d\n",
+    pr_debug("%s: Suspend completes%s in%s mode event:%d device_state:%d\n",
                    __func__, runtime_pm ? " for runtime pm" : "",
                    wma_is_wow_mode_selected(temp_module) ? " wow" : " pdev",
                    state.event, val);
-    printk("%s: Suspend completes%s\n", __func__,
+    pr_debug("%s: Suspend completes%s\n", __func__,
             runtime_pm ? " for runtime pm" : "");
 
     ret = 0;
@@ -2840,7 +2844,7 @@ skip:
     }
 #endif
 
-    pr_info("%s: Resume completes%s in%s mode\n", __func__,
+    pr_debug("%s: Resume completes%s in%s mode\n", __func__,
                 runtime_pm ? " for runtime pm" : "",
                 wma_is_wow_mode_selected(temp_module) ? " wow" : " pdev");
 out:

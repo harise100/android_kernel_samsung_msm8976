@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -282,7 +282,7 @@ rrmProcessLinkMeasurementRequest( tpAniSirGlobal pMac,
    }
    pHdr = WDA_GET_RX_MAC_HEADER( pRxPacketInfo );
 
-   LinkReport.txPower = limGetMaxTxPower (pLinkReq->MaxTxPower.maxTxPower,
+   LinkReport.txPower = limGetMaxTxPower (pSessionEntry->maxTxPower,
                                           pLinkReq->MaxTxPower.maxTxPower,
                                           pMac->roam.configParam.nTxPowerCap);
 
@@ -628,20 +628,24 @@ rrmProcessBeaconReportReq( tpAniSirGlobal pMac,
    if( pBeaconReq->measurement_request.Beacon.num_APChannelReport )
    {
       tANI_U8 *ch_lst = pSmeBcnReportReq->channelList.channelNumber;
-      uint8_t len;
-      uint16_t ch_ctr = 0;
-      for( num_APChanReport = 0 ; num_APChanReport < pBeaconReq->measurement_request.Beacon.num_APChannelReport ; num_APChanReport++ )
-      {
-         len = pBeaconReq->measurement_request.Beacon.
-                            APChannelReport[num_APChanReport].num_channelList;
-         if(ch_ctr + len > sizeof(pSmeBcnReportReq->channelList.channelNumber))
-            break;
+      tANI_U8 len;
+      tANI_U16 ch_ctr = 0;
+      for(num_APChanReport = 0;
+          num_APChanReport <
+          pBeaconReq->measurement_request.Beacon.num_APChannelReport;
+          num_APChanReport++) {
+              len = pBeaconReq->measurement_request.Beacon.
+                  APChannelReport[num_APChanReport].num_channelList;
+              if (ch_ctr + len >
+                 sizeof(pSmeBcnReportReq->channelList.channelNumber))
+                      break;
 
-         vos_mem_copy(&ch_lst[ch_ctr],
-                      pBeaconReq->measurement_request.Beacon.
-                      APChannelReport[num_APChanReport].channelList, len);
+              vos_mem_copy(&ch_lst[ch_ctr],
+                           pBeaconReq->measurement_request.Beacon.
+                           APChannelReport[num_APChanReport].channelList,
+                           len);
 
-         ch_ctr += len;
+              ch_ctr += len;
       }
    }
 
@@ -704,12 +708,18 @@ rrmFillBeaconIes( tpAniSirGlobal pMac,
    *((tANI_U16*)pIes) = pBssDesc->capabilityInfo;
    *pNumIes+=sizeof(tANI_U16); pIes+=sizeof(tANI_U16);
 
-   while ( BcnNumIes > 0 )
+   while ( BcnNumIes >= 2 )
    {
-      len = *(pBcnIes + 1) + 2; //element id + length.
+      len = *(pBcnIes + 1);
+      len += 2;            //element id + length.
       limLog( pMac, LOG3, "EID = %d, len = %d total = %d",
              *pBcnIes, *(pBcnIes+1), len );
 
+      if (BcnNumIes < len || len <= 2) {
+          limLog(pMac, LOGE, "RRM: Invalid IE len: %d, exp_len: %d",
+                 len, BcnNumIes);
+          break;
+      }
       i = 0;
       do
       {
@@ -1237,8 +1247,8 @@ rrmInitialize(tpAniSirGlobal pMac)
    pRRMCaps->fine_time_meas_rpt = 1;
    pRRMCaps->lci_capability = 1;
 
-   pRRMCaps->operatingChanMax = 3;
-   pRRMCaps->nonOperatingChanMax = 3;
+   pRRMCaps->operatingChanMax = 4;
+   pRRMCaps->nonOperatingChanMax = 4;
 
    return eSIR_SUCCESS;
 }

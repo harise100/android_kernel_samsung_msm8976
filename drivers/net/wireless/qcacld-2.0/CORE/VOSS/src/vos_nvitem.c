@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -118,6 +118,48 @@ static v_BOOL_t init_by_reg_core = VOS_FALSE;
 #define WORLD_SKU_MASK          0x00F0
 #define WORLD_SKU_PREFIX        0x0060
 
+/**
+ * struct bonded_chan
+ * @start_ch: start channel
+ * @end_ch: end channel
+ */
+struct bonded_chan {
+	uint16_t start_ch;
+	uint16_t end_ch;
+};
+
+static const struct bonded_chan bonded_chan_40mhz_array[] = {
+	{36, 40},
+	{44, 48},
+	{52, 56},
+	{60, 64},
+	{100, 104},
+	{108, 112},
+	{116, 120},
+	{124, 128},
+	{132, 136},
+	{140, 144},
+	{149, 153},
+	{157, 161}
+};
+
+static const struct bonded_chan bonded_chan_80mhz_array[] = {
+	{36, 48},
+	{52, 64},
+	{100, 112},
+	{116, 128},
+	{132, 144},
+	{149, 161}
+};
+
+static const enum phy_ch_width next_lower_bw[] = {
+	[CH_WIDTH_80MHZ] = CH_WIDTH_40MHZ,
+	[CH_WIDTH_40MHZ] = CH_WIDTH_20MHZ,
+	[CH_WIDTH_20MHZ] = CH_WIDTH_10MHZ,
+	[CH_WIDTH_10MHZ] = CH_WIDTH_5MHZ,
+	[CH_WIDTH_5MHZ] = CH_WIDTH_INVALID
+};
+
 static const struct ieee80211_regdomain vos_world_regdom_60_61_62 = {
    .n_reg_rules = 6,
    .alpha2 =  "00",
@@ -209,13 +251,6 @@ chan_to_ht_40_index_map chan_to_ht_40_index[NUM_20MHZ_RF_CHANNELS] =
   {RF_CHAN_BOND_10, INVALID_RF_CHANNEL},   //RF_CHAN_12,
   {RF_CHAN_BOND_11, INVALID_RF_CHANNEL},   //RF_CHAN_13,
   {INVALID_RF_CHANNEL, INVALID_RF_CHANNEL},//RF_CHAN_14,
-  {INVALID_RF_CHANNEL, RF_CHAN_BOND_242},  //RF_CHAN_240,
-  {RF_CHAN_BOND_242, RF_CHAN_BOND_246},    //RF_CHAN_244,
-  {RF_CHAN_BOND_246, RF_CHAN_BOND_250},    //RF_CHAN_248,
-  {RF_CHAN_BOND_250, INVALID_RF_CHANNEL},  //RF_CHAN_252,
-  {INVALID_RF_CHANNEL, RF_CHAN_BOND_210},  //RF_CHAN_208,
-  {RF_CHAN_BOND_210, RF_CHAN_BOND_214},    //RF_CHAN_212,
-  {RF_CHAN_BOND_214, INVALID_RF_CHANNEL},  //RF_CHAN_216,
   {INVALID_RF_CHANNEL, RF_CHAN_BOND_38},   //RF_CHAN_36,
   {RF_CHAN_BOND_38, RF_CHAN_BOND_42},      //RF_CHAN_40,
   {RF_CHAN_BOND_42, RF_CHAN_BOND_46},      //RF_CHAN_44,
@@ -310,7 +345,7 @@ static CountryInfoTable_t countryInfoTable =
       {REGDOMAIN_FCC, {'G', 'T'}},  //GUATEMALA
       {REGDOMAIN_FCC, {'G', 'U'}},  //GUAM
       {REGDOMAIN_ETSI, {'H', 'U'}}, //HUNGARY
-      {REGDOMAIN_FCC, {'I', 'D'}},  //INDONESIA
+      {REGDOMAIN_ETSI, {'I', 'D'}},  //INDONESIA
       {REGDOMAIN_ETSI, {'I', 'E'}}, //IRELAND
       {REGDOMAIN_ETSI, {'I', 'L'}}, //ISRAEL
       {REGDOMAIN_ETSI, {'I', 'N'}}, //INDIA
@@ -380,12 +415,12 @@ static CountryInfoTable_t countryInfoTable =
       {REGDOMAIN_ETSI, {'T', 'R'}}, //TURKEY
       {REGDOMAIN_ETSI, {'T', 'T'}}, //TRINIDAD AND TOBAGO
       {REGDOMAIN_FCC, {'T', 'W'}}, //TAIWAN, PRIVINCE OF CHINA
-      {REGDOMAIN_FCC, {'T', 'Z'}}, //TANZANIA, UNITED REPUBLIC OF
+      {REGDOMAIN_ETSI, {'T', 'Z'}}, //TANZANIA, UNITED REPUBLIC OF
       {REGDOMAIN_ETSI, {'U', 'A'}}, //UKRAINE
       {REGDOMAIN_ETSI, {'U', 'G'}}, //UGANDA
       {REGDOMAIN_FCC, {'U', 'S'}}, //USA
       {REGDOMAIN_ETSI, {'U', 'Y'}}, //URUGUAY
-      {REGDOMAIN_FCC, {'U', 'Z'}}, //UZBEKISTAN
+      {REGDOMAIN_ETSI, {'U', 'Z'}}, //UZBEKISTAN
       {REGDOMAIN_ETSI, {'V', 'E'}}, //VENEZUELA
       {REGDOMAIN_FCC, {'V', 'I'}}, //VIRGIN ISLANDS, US
       {REGDOMAIN_ETSI, {'V', 'N'}}, //VIETNAM
@@ -393,6 +428,7 @@ static CountryInfoTable_t countryInfoTable =
       {REGDOMAIN_ETSI, {'Y', 'T'}}, //MAYOTTE
       {REGDOMAIN_ETSI, {'Z', 'A'}}, //SOUTH AFRICA
       {REGDOMAIN_ETSI, {'Z', 'W'}}, //ZIMBABWE
+      {REGDOMAIN_JAPAN, {'X', 'A'}}, //JAPAN PASSIVE
     }
 };
 
@@ -421,13 +457,6 @@ const tRfChannelProps rfChannels[NUM_RF_CHANNELS] =
     { 2467, 12 , RF_SUBBAND_2_4_GHZ},        //RF_CHAN_12,
     { 2472, 13 , RF_SUBBAND_2_4_GHZ},        //RF_CHAN_13,
     { 2484, 14 , RF_SUBBAND_2_4_GHZ},        //RF_CHAN_14,
-    { 4920, 240, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_240,
-    { 4940, 244, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_244,
-    { 4960, 248, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_248,
-    { 4980, 252, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_252,
-    { 5040, 208, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_208,
-    { 5060, 212, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_212,
-    { 5080, 216, RF_SUBBAND_4_9_GHZ},        //RF_CHAN_216,
     { 5180, 36 , RF_SUBBAND_5_LOW_GHZ},      //RF_CHAN_36,
     { 5200, 40 , RF_SUBBAND_5_LOW_GHZ},      //RF_CHAN_40,
     { 5220, 44 , RF_SUBBAND_5_LOW_GHZ},      //RF_CHAN_44,
@@ -482,11 +511,6 @@ const tRfChannelProps rfChannels[NUM_RF_CHANNELS] =
     { 2452, 9  , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_9,
     { 2457, 10 , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_10,
     { 2462, 11 , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_11,
-    { 4930, 242, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_242,
-    { 4950, 246, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_246,
-    { 4970, 250, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_250,
-    { 5050, 210, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_210,
-    { 5070, 214, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_214,
     { 5190, 38 , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_38,
     { 5210, 42 , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_42,
     { 5230, 46 , NUM_RF_SUBBANDS},           //RF_CHAN_BOND_46,
@@ -512,6 +536,13 @@ const tRfChannelProps rfChannels[NUM_RF_CHANNELS] =
     { 5795, 159, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_159,
     { 5815, 163, NUM_RF_SUBBANDS},           //RF_CHAN_BOND_163,
 };
+
+#define VOS_IS_CHANNEL_5GHZ(chan_num) \
+	((chan_num >= rfChannels[RF_CHAN_36].channelNum) && \
+	 (chan_num <= rfChannels[RF_CHAN_184].channelNum))
+#define VOS_IS_CHANNEL_24GHZ(chan_num) \
+	((chan_num >= rfChannels[RF_CHAN_1].channelNum) && \
+	 (chan_num <= rfChannels[RF_CHAN_14].channelNum))
 
 extern const sHalNv nvDefaults;
 
@@ -726,6 +757,322 @@ VOS_STATUS vos_nv_close(void)
     return VOS_STATUS_SUCCESS;
 }
 
+/**
+ * vos_search_5g_bonded_chan_array() - get ptr to bonded channel
+ * @oper_ch: operating channel number
+ * @bonded_chan_ar: bonded channel array
+ * @bonded_chan_ptr_ptr: bonded channel ptr ptr
+ *
+ * Return: eNVChannelEnabledType
+ */
+static eNVChannelEnabledType vos_search_5g_bonded_chan_array(
+	uint32_t oper_chan, const struct bonded_chan bonded_chan_ar[],
+	uint16_t array_size, const struct bonded_chan
+	**bonded_chan_ptr_ptr)
+{
+	int i;
+	uint8_t chan_num;
+	const struct bonded_chan *bonded_chan_ptr = NULL;
+	eNVChannelEnabledType chan_state = NV_CHANNEL_INVALID;
+	eNVChannelEnabledType temp_chan_state;
+
+	for (i = 0; i < array_size; i++) {
+		if ((oper_chan >= bonded_chan_ar[i].start_ch) &&
+		    (oper_chan <= bonded_chan_ar[i].end_ch)) {
+			bonded_chan_ptr =  &(bonded_chan_ar[i]);
+			break;
+		}
+	}
+
+	if (NULL == bonded_chan_ptr)
+		return chan_state;
+
+	*bonded_chan_ptr_ptr = bonded_chan_ptr;
+	chan_num =  bonded_chan_ptr->start_ch;
+	while (chan_num <= bonded_chan_ptr->end_ch) {
+		temp_chan_state = vos_nv_getChannelEnabledState(chan_num);
+		if (temp_chan_state < chan_state)
+			chan_state = temp_chan_state;
+		chan_num = chan_num + 4;
+	}
+
+	return chan_state;
+}
+
+/**
+ * vos_search_5g_bonded_channel() - get the 5G bonded channel state
+ * @chan_num: channel number
+ * @ch_width: channel width
+ * @bonded_chan_ptr_ptr: bonded channel ptr ptr
+ *
+ * Return: channel state
+ */
+static eNVChannelEnabledType vos_search_5g_bonded_channel(uint32_t chan_num,
+						enum phy_ch_width ch_width,
+						const struct bonded_chan
+						**bonded_chan_ptr_ptr)
+{
+
+	if (CH_WIDTH_80MHZ == ch_width)
+		return vos_search_5g_bonded_chan_array(chan_num,
+			bonded_chan_80mhz_array,
+			ARRAY_SIZE(bonded_chan_80mhz_array),
+			bonded_chan_ptr_ptr);
+	else if (CH_WIDTH_40MHZ == ch_width)
+		return vos_search_5g_bonded_chan_array(chan_num,
+			bonded_chan_40mhz_array,
+			ARRAY_SIZE(bonded_chan_40mhz_array),
+			bonded_chan_ptr_ptr);
+	else
+		return vos_nv_getChannelEnabledState(chan_num);
+}
+
+/**
+ * vos_get_5g_bonded_channel_state() - get the 5G bonded channel state
+ * @chan_num: channel number
+ * @ch_width: channel width
+ *
+ * Return: channel state
+ */
+eNVChannelEnabledType vos_get_5g_bonded_channel_state(
+	uint16_t chan_num,
+	enum phy_ch_width ch_width,
+	const struct bonded_chan *bonded_chan_ptr)
+{
+	bool bw_enabled = false;
+	uint32_t flags;
+
+	if (CH_WIDTH_80MHZ < ch_width)
+		return NV_CHANNEL_INVALID;
+
+	flags = vos_nv_get_channel_flags(chan_num);
+
+	if (CH_WIDTH_5MHZ == ch_width) {
+		bw_enabled = true;
+	} else if (CH_WIDTH_10MHZ == ch_width) {
+		bw_enabled = !(flags &
+				IEEE80211_CHAN_NO_10MHZ);
+	} else if (CH_WIDTH_20MHZ == ch_width) {
+		bw_enabled = !(flags &
+				IEEE80211_CHAN_NO_20MHZ);
+	} else if (CH_WIDTH_40MHZ == ch_width) {
+		if (chan_num == bonded_chan_ptr->start_ch)
+			bw_enabled =
+				!(flags & IEEE80211_CHAN_NO_HT40PLUS);
+		else
+			bw_enabled =
+				!(flags & IEEE80211_CHAN_NO_HT40MINUS);
+	} else if (CH_WIDTH_80MHZ == ch_width) {
+		bw_enabled = !(flags &
+				IEEE80211_CHAN_NO_80MHZ);
+	}
+
+	if (bw_enabled)
+		return NV_CHANNEL_ENABLE;
+	else
+		return NV_CHANNEL_DISABLE;
+}
+
+/**
+ * vos_set_sec_chan_offset_vht80() - set sec channel offset for vht80
+ * @oper_ch: operating channel
+ * @center_chan: center channel for operating channel
+ * @ch_params: channel parameters
+ *
+ * Return: void
+ */
+static inline void vos_set_sec_chan_offset_vht80(uint16_t oper_ch,
+	uint16_t center_chan, struct ch_params_s *ch_params)
+{
+	if ((oper_ch + 2 ) == center_chan)
+		ch_params->sec_ch_offset =
+			PHY_QUADRUPLE_CHANNEL_20MHZ_HIGH_40MHZ_LOW;
+	else if ((oper_ch + 6 ) == center_chan)
+		ch_params->sec_ch_offset =
+			PHY_QUADRUPLE_CHANNEL_20MHZ_LOW_40MHZ_LOW;
+	else if ((oper_ch - 2 ) == center_chan)
+		ch_params->sec_ch_offset =
+			PHY_QUADRUPLE_CHANNEL_20MHZ_LOW_40MHZ_HIGH;
+	else if ((oper_ch - 6 ) == center_chan)
+		ch_params->sec_ch_offset =
+			PHY_QUADRUPLE_CHANNEL_20MHZ_HIGH_40MHZ_HIGH;
+}
+
+/**
+ * vos_set_5g_channel_params() - set the 5G bonded channel parameters
+ * @oper_ch: operating channel
+ * @ch_params: channel parameters
+ *
+ * Return: void
+ */
+static void vos_set_5g_channel_params(uint16_t oper_ch,
+				      struct ch_params_s *ch_params)
+{
+	eNVChannelEnabledType chan_state = NV_CHANNEL_ENABLE;
+	const struct bonded_chan *bonded_chan_ptr;
+	uint16_t center_chan;
+
+	if (CH_WIDTH_MAX <= ch_params->ch_width)
+		ch_params->ch_width = CH_WIDTH_80MHZ;
+
+	while (ch_params->ch_width < CH_WIDTH_INVALID) {
+		chan_state = vos_search_5g_bonded_channel(oper_ch,
+				ch_params->ch_width, &bonded_chan_ptr);
+		if (((NV_CHANNEL_ENABLE != chan_state) &&
+		   (NV_CHANNEL_DFS != chan_state)))
+			goto next;
+
+		chan_state = vos_get_5g_bonded_channel_state(oper_ch,
+				ch_params->ch_width, bonded_chan_ptr);
+		if (((NV_CHANNEL_ENABLE != chan_state) &&
+		   (NV_CHANNEL_DFS != chan_state)))
+			goto next;
+
+		if (CH_WIDTH_20MHZ >= ch_params->ch_width) {
+			ch_params->sec_ch_offset
+				= PHY_SINGLE_CHANNEL_CENTERED;
+			break;
+		} else if (CH_WIDTH_40MHZ == ch_params->ch_width) {
+			if (oper_ch == bonded_chan_ptr->start_ch)
+				ch_params->sec_ch_offset =
+					PHY_DOUBLE_CHANNEL_LOW_PRIMARY;
+			else
+				ch_params->sec_ch_offset =
+					PHY_DOUBLE_CHANNEL_HIGH_PRIMARY;
+		}
+
+		center_chan = (bonded_chan_ptr->start_ch +
+			 bonded_chan_ptr->end_ch) / 2;
+		ch_params->center_freq_seg0 =
+			vos_chan_to_freq(center_chan);
+
+		if (CH_WIDTH_80MHZ == ch_params->ch_width)
+			vos_set_sec_chan_offset_vht80(oper_ch,
+					center_chan, ch_params);
+
+		break;
+next:
+		ch_params->ch_width = next_lower_bw[ch_params->ch_width];
+	}
+}
+
+/**
+ * vos_get_2g_bonded_channel_state() - get the 2G bonded channel state
+ * @oper_ch: operating channel
+ * @ch_width: channel width
+ * @sec_ch: secondary channel
+ *
+ * Return: channel state
+ */
+eNVChannelEnabledType vos_get_2g_bonded_channel_state(uint16_t oper_ch,
+						  enum phy_ch_width ch_width,
+						  uint16_t sec_ch)
+{
+	eNVChannelEnabledType chan_state;
+	bool bw_enabled = false;
+	uint32_t flags;
+	bool ht_40_plus = false;
+
+	if (CH_WIDTH_40MHZ < ch_width)
+		return NV_CHANNEL_INVALID;
+
+	if (CH_WIDTH_40MHZ == ch_width) {
+		if ((sec_ch + 4 != oper_ch) &&
+		    (oper_ch + 4 != sec_ch))
+			return NV_CHANNEL_INVALID;
+		ht_40_plus = (oper_ch < sec_ch)? true : false;
+	}
+
+	chan_state = vos_nv_getChannelEnabledState(oper_ch);
+	if ((NV_CHANNEL_INVALID == chan_state) ||
+	    (NV_CHANNEL_DISABLE == chan_state))
+		return chan_state;
+
+	flags = vos_nv_get_channel_flags(oper_ch);
+
+	if (CH_WIDTH_5MHZ == ch_width) {
+		bw_enabled = true;
+	} else if (CH_WIDTH_10MHZ == ch_width) {
+		bw_enabled = !(flags &
+				IEEE80211_CHAN_NO_10MHZ);
+	} else if (CH_WIDTH_20MHZ == ch_width) {
+		bw_enabled = !(flags &
+				IEEE80211_CHAN_NO_20MHZ);
+	} else if (CH_WIDTH_40MHZ == ch_width) {
+		if (ht_40_plus)
+			bw_enabled =
+				!(flags & IEEE80211_CHAN_NO_HT40PLUS);
+		else
+			bw_enabled =
+				!(flags & IEEE80211_CHAN_NO_HT40MINUS);
+	}
+
+	if (bw_enabled)
+		return chan_state;
+	else
+		return NV_CHANNEL_DISABLE;
+}
+
+/**
+ * vos_set_2g_channel_params() - set the 2.4G bonded channel parameters
+ * @oper_ch: operating channel
+ * @ch_params: channel parameters
+ * @sec_ch_2g: 2.4G secondary channel
+ *
+ * Return: void
+ */
+static void vos_set_2g_channel_params(uint16_t oper_ch,
+		struct ch_params_s *ch_params,
+		uint16_t sec_ch_2g)
+{
+	eNVChannelEnabledType chan_state = NV_CHANNEL_ENABLE;
+
+	if (CH_WIDTH_MAX <= ch_params->ch_width)
+		ch_params->ch_width = CH_WIDTH_40MHZ;
+
+	while (ch_params->ch_width < CH_WIDTH_INVALID) {
+		chan_state = vos_get_2g_bonded_channel_state(oper_ch,
+							    ch_params->ch_width,
+							    sec_ch_2g);
+		if (NV_CHANNEL_ENABLE == chan_state) {
+			if (CH_WIDTH_40MHZ == ch_params->ch_width) {
+				if (oper_ch < sec_ch_2g)
+					ch_params->sec_ch_offset =
+						PHY_DOUBLE_CHANNEL_LOW_PRIMARY;
+				else
+					ch_params->sec_ch_offset =
+						PHY_DOUBLE_CHANNEL_HIGH_PRIMARY;
+				ch_params->center_freq_seg0 =
+					vos_chan_to_freq(
+						(oper_ch + sec_ch_2g) / 2);
+			} else {
+				ch_params->sec_ch_offset =
+					PHY_SINGLE_CHANNEL_CENTERED;
+			}
+			break;
+		}
+
+		ch_params->ch_width = next_lower_bw[ch_params->ch_width];
+	}
+}
+
+/**
+ * vos_set_channel_params() - set the bonded channel parameters
+ * @oper_ch: operating channel
+ * @sec_ch_2g: 2.4G secondary channel
+ * @ch_params: chanel parameters
+ *
+ * Return: void
+ */
+void vos_set_channel_params(uint16_t oper_ch, uint16_t sec_ch_2g,
+	struct ch_params_s *ch_params)
+{
+	if (VOS_IS_CHANNEL_5GHZ(oper_ch))
+		vos_set_5g_channel_params(oper_ch, ch_params);
+	else if (VOS_IS_CHANNEL_24GHZ(oper_ch))
+		vos_set_2g_channel_params(oper_ch, ch_params, sec_ch_2g);
+}
+
 /**------------------------------------------------------------------------
   \brief vos_nv_getSupportedCountryCode() - get the list of supported
   country codes
@@ -904,6 +1251,56 @@ VOS_STATUS vos_nv_readDefaultCountryTable( uNvTables *tableData )
    return status;
 }
 
+/**
+ * vos_nv_skip_dsrc_dfs_2g() - skip dsrc, dfs and 2g band channels
+ * @rf_channel: input channel enum to know, whether to skip or add the channel
+ * @skip_group: group to skip
+ *
+ * Return: true or false
+ */
+uint8_t vos_nv_skip_dsrc_dfs_2g(uint32_t rf_channel, int32_t skip_group)
+{
+	uint32_t channel_loop;
+	eRfChannels channel_enum = INVALID_RF_CHANNEL;
+	uint8_t ret = false;
+	int32_t start_channel, end_channel;
+
+	switch (skip_group){
+	case NV_CHANNEL_SKIP_DSRC:
+		start_channel = RF_CHAN_1;
+		end_channel = RF_CHAN_165;
+		break;
+	case NV_CHANNEL_SKIP_2G:
+		start_channel = RF_CHAN_36;
+		end_channel = RF_CHAN_165;
+		break;
+	default:
+		start_channel = RF_CHAN_1;
+		end_channel = RF_CHAN_184;
+		break;
+	}
+
+	for (channel_loop = start_channel;
+	     channel_loop <= end_channel; channel_loop++) {
+		if (rfChannels[channel_loop].channelNum == rf_channel) {
+			channel_enum = (eRfChannels)channel_loop;
+			break;
+		}
+	}
+
+	if (INVALID_RF_CHANNEL == channel_enum) {
+		VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO,
+			  FL("Invalid channel %d"), rf_channel);
+		ret = true;
+		goto exit_ok;
+	}
+
+	if (NV_CHANNEL_DFS == regChannels[channel_enum].enabled)
+		ret = true;
+exit_ok:
+	return ret;
+}
+
 /**------------------------------------------------------------------------
   \brief vos_nv_getChannelEnabledState -
   \param rfChannel  - input channel enum to know evabled state
@@ -938,6 +1335,37 @@ eNVChannelEnabledType vos_nv_getChannelEnabledState
    }
 
    return regChannels[channelEnum].enabled;
+}
+
+/**
+ * vos_nv_get_channel_flags: Get channel flags
+ * @rf_channel: Channel number.
+ * This function is called to know associated flags with channel
+ *
+ * Return: updated Wiphy struct
+ */
+uint32_t vos_nv_get_channel_flags
+(
+   uint32_t  rf_channel
+)
+{
+	uint32_t       channel_loop;
+	eRfChannels   channel_enum = INVALID_RF_CHANNEL;
+
+	for(channel_loop = 0; channel_loop <= RF_CHAN_184; channel_loop++) {
+		if(rfChannels[channel_loop].channelNum == rf_channel) {
+			channel_enum = (eRfChannels)channel_loop;
+			break;
+		}
+	}
+
+	if (INVALID_RF_CHANNEL == channel_enum) {
+		VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+			"vos_nv_get_channel_flags, invalid channel %d",
+			rf_channel);
+		return NV_CHANNEL_INVALID;
+	}
+	return regChannels[channel_enum].flags;
 }
 
 /******************************************************************
@@ -1139,11 +1567,13 @@ VOS_STATUS vos_nv_getRegDomainFromCountryCode( v_REGDOMAIN_t *pRegDomain,
 
     if (REGDOMAIN_COUNT == temp_reg_domain) {
 
-        /* the country was not found in the driver database */
-        /* so we will return the REGDOMAIN_WORLD to SME/CSR */
-
-        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
-                   ("Country does not map to any Regulatory domain"));
+        /*
+         * The country was not found in the driver database
+         * so we will return the REGDOMAIN_WORLD to SME/CSR
+         */
+        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO,
+                 ("Country %c%c does not map to any Regulatory domain"),
+                  country_code[0], country_code[1]);
 
         temp_reg_domain = REGDOMAIN_WORLD;
     }
@@ -1181,6 +1611,34 @@ VOS_STATUS vos_nv_getRegDomainFromCountryCode( v_REGDOMAIN_t *pRegDomain,
     return VOS_STATUS_SUCCESS;
 }
 
+/* vos_is_fcc_regdomian() - is the regdomain FCC
+ *
+ * Return: true if FCC regdomain
+ *         false otherwise
+ */
+bool vos_is_fcc_regdomain(void)
+{
+	v_CONTEXT_t pVosContext = NULL;
+	hdd_context_t *pHddCtx = NULL;
+	v_REGDOMAIN_t domainId;
+
+	pVosContext = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
+
+	if (!pVosContext)
+		return false;
+	pHddCtx = vos_get_context(VOS_MODULE_ID_HDD, pVosContext);
+	if (!pHddCtx) {
+		VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+				("Invalid pHddCtx pointer"));
+		return false;
+	}
+	vos_nv_getRegDomainFromCountryCode(&domainId,
+			pHddCtx->reg.alpha2, COUNTRY_QUERY);
+	if (REGDOMAIN_FCC == domainId)
+		return true;
+	return false;
+}
+
 #ifdef FEATURE_STATICALLY_ADD_11P_CHANNELS
 #define DEFAULT_11P_POWER (30)
 #endif
@@ -1209,7 +1667,93 @@ bool vos_is_dsrc_channel(uint16_t center_freq)
     }
     return 0;
 }
+/**
+ * vos_update_band: Update the band
+ * @eBand: Band value
+ *
+ * This function is called from the supplicant through a
+ * private ioctl to change the band value.
+ *
+ * Return: updated Wiphy struct
+ */
+int vos_update_band(v_U8_t  band_capability)
+{
+	v_CONTEXT_t vos_ctx = NULL;
+	hdd_context_t *hdd_ctx = NULL;
+	struct wiphy *wiphy = NULL;
+	int i, j;
+	eNVChannelEnabledType channel_enabled_state;
+	uint32_t flags;
+	ENTER();
+	vos_ctx = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
 
+	if (NULL != vos_ctx)
+		hdd_ctx = vos_get_context(VOS_MODULE_ID_HDD, vos_ctx);
+	else
+		return VOS_STATUS_E_EXISTS;
+
+	if (NULL == hdd_ctx) {
+		VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+				("Invalid hdd_ctx pointer") );
+		return VOS_STATUS_E_FAULT;
+	}
+
+	if (hdd_ctx->isLogpInProgress) {
+		VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+				(" SSR in progress, return") );
+		return VOS_STATUS_SUCCESS;
+	}
+
+	wiphy = hdd_ctx->wiphy;
+
+	if (false == wiphy->registered) {
+		VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+			("wiphy is not yet registered with the kernel"));
+		return VOS_STATUS_E_FAULT;
+	}
+
+	for (i = 0; i < IEEE80211_NUM_BANDS; i++) {
+		if (NULL == wiphy->bands[i])
+			continue;
+
+		for (j = 0; j < wiphy->bands[i]->n_channels; j++) {
+			struct ieee80211_supported_band *band = wiphy->bands[i];
+
+			flags = vos_nv_get_channel_flags(
+					band->channels[j].hw_value);
+			channel_enabled_state =
+				vos_nv_getChannelEnabledState(
+						band->channels[j].hw_value);
+			/* 5G only */
+			if (IEEE80211_BAND_2GHZ == i &&
+					eCSR_BAND_5G == band_capability) {
+#ifdef WLAN_ENABLE_SOCIAL_CHANNELS_5G_ONLY
+				/* Enable Social channels for P2P */
+				if (WLAN_HDD_IS_SOCIAL_CHANNEL(
+					band->channels[j].center_freq) &&
+					NV_CHANNEL_ENABLE ==
+					channel_enabled_state)
+					band->channels[j].flags &=
+						~IEEE80211_CHAN_DISABLED;
+				else
+#endif
+					band->channels[j].flags |=
+						IEEE80211_CHAN_DISABLED;
+				continue;
+			} else if (IEEE80211_BAND_5GHZ == i &&
+					eCSR_BAND_24 == band_capability) {
+				/* 2.4G only */
+				band->channels[j].flags |=
+					IEEE80211_CHAN_DISABLED;
+				continue;
+			}
+			if (NV_CHANNEL_DISABLE != channel_enabled_state)
+				band->channels[j].flags = flags;
+
+		}
+	}
+	return 0;
+}
 
 /* create_linux_regulatory_entry to populate internal structures from wiphy */
 static int create_linux_regulatory_entry(struct wiphy *wiphy,
@@ -1254,14 +1798,6 @@ static int create_linux_regulatory_entry(struct wiphy *wiphy,
 
     for (i = 0, m = 0; i<IEEE80211_NUM_BANDS; i++)
     {
-        /* 5G only */
-        if (i == IEEE80211_BAND_2GHZ && nBandCapability == eCSR_BAND_5G)
-            continue;
-
-        /* 2G only */
-        else if (i == IEEE80211_BAND_5GHZ && nBandCapability == eCSR_BAND_24)
-            continue;
-
         if (wiphy->bands[i] == NULL)
             continue;
 
@@ -1517,9 +2053,12 @@ static int create_linux_regulatory_entry(struct wiphy *wiphy,
                 }
 
             }
-
-            /* ignore CRDA max_antenna_gain typical is 3dBi, nv.bin antennaGain
-               is real gain which should be provided by the real design */
+            /* Copy wiphy flags in nv table */
+            if (n != -1)
+                pnvEFSTable->halnv.tables.regDomains[temp_reg_domain].
+                    channels[n].flags = wiphy->bands[i]->channels[j].flags;
+            pnvEFSTable->halnv.tables.regDomains[temp_reg_domain].
+                channels[k].flags = wiphy->bands[i]->channels[j].flags;
         }
     }
 
@@ -1535,6 +2074,7 @@ static int create_linux_regulatory_entry(struct wiphy *wiphy,
     if (k == 0)
        return -1;
 
+    vos_update_band(nBandCapability);
     return 0;
 }
 
@@ -1630,6 +2170,16 @@ int __wlan_hdd_linux_reg_notifier(struct wiphy *wiphy,
 #endif
     }
 
+    if (pHddCtx->isWiphySuspended == TRUE) {
+        VOS_TRACE( VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                  "system/cfg80211 is already suspend");
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,9,0)) || defined(WITH_BACKPORTS)
+        return;
+#else
+        return 0;
+#endif
+    }
+
     sme_GetFreqBand(pHddCtx->hHal, &nBandCapability);
 
     /* first check if this callback is in response to the driver callback */
@@ -1717,7 +2267,8 @@ int __wlan_hdd_linux_reg_notifier(struct wiphy *wiphy,
             temp_reg_domain = REGDOMAIN_WORLD;
 
         isVHT80Allowed = pHddCtx->isVHT80Allowed;
-
+        regChannels =
+            pnvEFSTable->halnv.tables.regDomains[temp_reg_domain].channels;
         if (create_linux_regulatory_entry(wiphy,
                                           nBandCapability,
                                           reset) == 0)

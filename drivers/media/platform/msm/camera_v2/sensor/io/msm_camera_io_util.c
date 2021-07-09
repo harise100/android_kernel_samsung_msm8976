@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundataion. All rights reserved.
+/* Copyright (c) 2011-2014, 2017-2019,The Linux Foundataion. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -27,13 +27,13 @@
 
 void msm_camera_io_w(u32 data, void __iomem *addr)
 {
-	CDBG("%s: 0x%p %08x\n", __func__,  (addr), (data));
+	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
 	writel_relaxed((data), (addr));
 }
 
 void msm_camera_io_w_mb(u32 data, void __iomem *addr)
 {
-	CDBG("%s: 0x%p %08x\n", __func__,  (addr), (data));
+	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
 	wmb();
 	writel_relaxed((data), (addr));
 	wmb();
@@ -54,7 +54,7 @@ u32 msm_camera_io_r_mb(void __iomem *addr)
 	rmb();
 	data = readl_relaxed(addr);
 	rmb();
-	CDBG("%s: 0x%p %08x\n", __func__,  (addr), (data));
+	CDBG("%s: 0x%pK %08x\n", __func__,  (addr), (data));
 	return data;
 }
 
@@ -81,7 +81,7 @@ void msm_camera_io_dump(void __iomem *addr, int size)
 	p_str = line_str;
 	for (i = 0; i < size/4; i++) {
 		if (i % 4 == 0) {
-			snprintf(p_str, 12, "0x%p: ",  p);
+			snprintf(p_str, 12, "0x%pK: ",  p);
 			p_str += 10;
 		}
 		data = readl_relaxed(p++);
@@ -100,7 +100,7 @@ void msm_camera_io_dump(void __iomem *addr, int size)
 void msm_camera_io_memcpy(void __iomem *dest_addr,
 	void __iomem *src_addr, u32 len)
 {
-	CDBG("%s: %p %p %d\n", __func__, dest_addr, src_addr, len);
+	CDBG("%s: %pK %pK %d\n", __func__, dest_addr, src_addr, len);
 	msm_camera_io_memcpy_toio(dest_addr, src_addr, len / 4);
 	msm_camera_io_dump(dest_addr, len);
 }
@@ -222,12 +222,13 @@ int msm_cam_clk_enable(struct device *dev, struct msm_cam_clk_info *clk_info,
 		}
 	} else {
 		for (i = num_clk - 1; i >= 0; i--) {
-			if (clk_ptr[i] != NULL) {
+			if (!IS_ERR_OR_NULL(clk_ptr[i])) {
 				CDBG("%s disable %s\n", __func__,
 					clk_info[i].clk_name);
 				clk_disable(clk_ptr[i]);
 				clk_unprepare(clk_ptr[i]);
 				clk_put(clk_ptr[i]);
+				clk_ptr[i] = NULL;
 			}
 		}
 	}
@@ -241,10 +242,11 @@ cam_clk_set_err:
 	clk_put(clk_ptr[i]);
 cam_clk_get_err:
 	for (i--; i >= 0; i--) {
-		if (clk_ptr[i] != NULL) {
+		if (!IS_ERR_OR_NULL(clk_ptr[i])) {
 			clk_disable(clk_ptr[i]);
 			clk_unprepare(clk_ptr[i]);
 			clk_put(clk_ptr[i]);
+			clk_ptr[i] = NULL;
 		}
 	}
 	return rc;
@@ -602,7 +604,7 @@ int msm_camera_request_gpio_table(struct gpio *gpio_tbl, uint8_t size,
 	int rc = 0, i = 0, err = 0;
 
 	if (!gpio_tbl || !size) {
-		pr_err("%s:%d invalid gpio_tbl %p / size %d\n", __func__,
+		pr_err("%s:%d invalid gpio_tbl %pK / size %d\n", __func__,
 			__LINE__, gpio_tbl, size);
 		return -EINVAL;
 	}

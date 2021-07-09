@@ -51,6 +51,7 @@
 #endif
 
 #define WMI_MIN_HEAD_ROOM 64
+#define RADAR_WMI_EVENT_PENDING_MAX 1000
 
 #ifdef WMI_INTERFACE_EVENT_LOGGING
 /* WMI commands */
@@ -669,6 +670,110 @@ inline bool wmi_get_runtime_pm_inprogress(wmi_unified_t wmi_handle)
 }
 #endif
 
+static uint16_t wmi_tag_vdev_set_cmd(wmi_unified_t wmi_hdl, wmi_buf_t buf)
+{
+	wmi_vdev_set_param_cmd_fixed_param *set_cmd;
+
+	set_cmd = (wmi_vdev_set_param_cmd_fixed_param *)wmi_buf_data(buf);
+
+	switch(set_cmd->param_id) {
+	case WMI_VDEV_PARAM_LISTEN_INTERVAL:
+	case WMI_VDEV_PARAM_DTIM_POLICY:
+		return HTC_TX_PACKET_TAG_AUTO_PM;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static uint16_t wmi_tag_sta_powersave_cmd(wmi_unified_t wmi_hdl, wmi_buf_t buf)
+{
+	wmi_sta_powersave_param_cmd_fixed_param *ps_cmd;
+
+	ps_cmd = (wmi_sta_powersave_param_cmd_fixed_param *)wmi_buf_data(buf);
+
+	switch(ps_cmd->param) {
+	case WMI_STA_PS_ENABLE_QPOWER:
+		return HTC_TX_PACKET_TAG_AUTO_PM;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static uint16_t wmi_tag_common_cmd(wmi_unified_t wmi_hdl, wmi_buf_t buf,
+				   WMI_CMD_ID cmd_id)
+{
+	tp_wma_handle wma = wmi_hdl->scn_handle;
+
+	if (adf_os_atomic_read(&wma->is_wow_bus_suspended))
+		return 0;
+
+	switch(cmd_id) {
+	case WMI_VDEV_SET_PARAM_CMDID:
+		return wmi_tag_vdev_set_cmd(wmi_hdl, buf);
+	case WMI_STA_POWERSAVE_PARAM_CMDID:
+		return wmi_tag_sta_powersave_cmd(wmi_hdl, buf);
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+static uint16_t wmi_tag_fw_hang_cmd(wmi_unified_t wmi_handle)
+{
+	uint16_t tag = 0;
+
+	if (wmi_handle->tag_crash_inject)
+		tag = HTC_TX_PACKET_TAG_AUTO_PM;
+
+	wmi_handle->tag_crash_inject = false;
+	return tag;
+}
+
+/**
+ * wmi_set_htc_tx_tag() - set HTC TX tag for WMI commands
+ * @wmi_handle: WMI handle
+ * @buf: WMI buffer
+ * @cmd_id: WMI command Id
+ *
+ * Return htc_tx_tag
+ */
+static uint16_t wmi_set_htc_tx_tag(wmi_unified_t wmi_handle,
+				wmi_buf_t buf,
+				WMI_CMD_ID cmd_id)
+{
+	uint16_t htc_tx_tag = 0;
+
+	switch(cmd_id) {
+	case WMI_WOW_ENABLE_CMDID:
+	case WMI_PDEV_SUSPEND_CMDID:
+	case WMI_WOW_ENABLE_DISABLE_WAKE_EVENT_CMDID:
+	case WMI_WOW_ADD_WAKE_PATTERN_CMDID:
+	case WMI_WOW_HOSTWAKEUP_FROM_SLEEP_CMDID:
+	case WMI_PDEV_RESUME_CMDID:
+	case WMI_WOW_DEL_WAKE_PATTERN_CMDID:
+#ifdef FEATURE_WLAN_D0WOW
+	case WMI_D0_WOW_ENABLE_DISABLE_CMDID:
+#endif
+		htc_tx_tag = HTC_TX_PACKET_TAG_AUTO_PM;
+		break;
+	case WMI_FORCE_FW_HANG_CMDID:
+		htc_tx_tag = wmi_tag_fw_hang_cmd(wmi_handle);
+		break;
+	case WMI_VDEV_SET_PARAM_CMDID:
+	case WMI_STA_POWERSAVE_PARAM_CMDID:
+		htc_tx_tag = wmi_tag_common_cmd(wmi_handle, buf, cmd_id);
+	default:
+		break;
+	}
+
+	return htc_tx_tag;
+}
+
 /* WMI command API */
 int wmi_unified_cmd_send(wmi_unified_t wmi_handle, wmi_buf_t buf, int len,
 			 WMI_CMD_ID cmd_id)
@@ -699,26 +804,8 @@ int wmi_unified_cmd_send(wmi_unified_t wmi_handle, wmi_buf_t buf, int len,
 		goto dont_tag;
 
 skip_suspend_check:
-	switch(cmd_id) {
-	case WMI_WOW_ENABLE_CMDID:
-	case WMI_PDEV_SUSPEND_CMDID:
-	case WMI_WOW_ENABLE_DISABLE_WAKE_EVENT_CMDID:
-	case WMI_WOW_ADD_WAKE_PATTERN_CMDID:
-	case WMI_WOW_HOSTWAKEUP_FROM_SLEEP_CMDID:
-	case WMI_PDEV_RESUME_CMDID:
-	case WMI_WOW_DEL_WAKE_PATTERN_CMDID:
-#ifdef FEATURE_WLAN_D0WOW
-	case WMI_D0_WOW_ENABLE_DISABLE_CMDID:
-#endif
-		htc_tag = HTC_TX_PACKET_TAG_AUTO_PM;
-	case WMI_FORCE_FW_HANG_CMDID:
-		if (wmi_handle->tag_crash_inject) {
-			htc_tag = HTC_TX_PACKET_TAG_AUTO_PM;
-			wmi_handle->tag_crash_inject = false;
-		}
-	default:
-		break;
-	}
+	htc_tag = (A_UINT16) wmi_set_htc_tx_tag(wmi_handle,
+						buf, cmd_id);
 
 dont_tag:
 	/* Do sanity check on the TLV parameter structure */
@@ -919,12 +1006,25 @@ void wmi_control_rx(void *ctx, HTC_PACKET *htc_packet)
 	u_int8_t *data;
 #endif
 
+	tp_wma_handle wma = wmi_handle->scn_handle;
+
 	evt_buf = (wmi_buf_t) htc_packet->pPktContext;
 	id = WMI_GET_FIELD(adf_nbuf_data(evt_buf), WMI_CMD_HDR, COMMANDID);
 	/* TX_PAUSE EVENT should be handled with tasklet context */
-	if ((WMI_TX_PAUSE_EVENTID == id) ||
+	while ((WMI_TX_PAUSE_EVENTID == id) ||
 		(WMI_WOW_WAKEUP_HOST_EVENTID == id) ||
-		(WMI_D0_WOW_DISABLE_ACK_EVENTID == id)) {
+		(WMI_D0_WOW_DISABLE_ACK_EVENTID == id) ||
+		(WMI_DFS_RADAR_EVENTID == id)) {
+		if ((WMI_DFS_RADAR_EVENTID == id) && wma) {
+			if (adf_os_atomic_inc_return(
+					&wma->dfs_wmi_event_pending) <
+					RADAR_WMI_EVENT_PENDING_MAX) {
+				break;
+			} else {
+				adf_os_atomic_inc(&wma->dfs_wmi_event_dropped);
+				adf_os_atomic_dec(&wma->dfs_wmi_event_pending);
+			}
+		}
 		if (adf_nbuf_pull_head(evt_buf, sizeof(WMI_CMD_HDR)) == NULL)
 			return;
 
@@ -947,8 +1047,9 @@ void wmi_control_rx(void *ctx, HTC_PACKET *htc_packet)
 			adf_nbuf_free(evt_buf);
 			return;
 		}
-		wmi_handle->event_handler[idx](wmi_handle->scn_handle,
-			       wmi_cmd_struct_ptr, len);
+		if (WMI_DFS_RADAR_EVENTID != id)
+			wmi_handle->event_handler[idx](wmi_handle->scn_handle,
+					wmi_cmd_struct_ptr, len);
 		wmitlv_free_allocated_event_tlvs(id, &wmi_cmd_struct_ptr);
 		adf_nbuf_free(evt_buf);
 		return;
@@ -1146,6 +1247,8 @@ void wmi_htc_tx_complete(void *ctx, HTC_PACKET *htc_pkt)
 {
 	struct wmi_unified *wmi_handle = (struct wmi_unified *)ctx;
 	wmi_buf_t wmi_cmd_buf = GET_HTC_PACKET_NET_BUF_CONTEXT(htc_pkt);
+	u_int8_t *buf_ptr;
+	u_int32_t len;
 #ifdef WMI_INTERFACE_EVENT_LOGGING
 	u_int32_t cmd_id;
 #endif
@@ -1161,6 +1264,9 @@ void wmi_htc_tx_complete(void *ctx, HTC_PACKET *htc_pkt)
 		((u_int32_t *)adf_nbuf_data(wmi_cmd_buf) + 2));
 	adf_os_spin_unlock_bh(&wmi_handle->wmi_record_lock);
 #endif
+	buf_ptr = (u_int8_t *) wmi_buf_data(wmi_cmd_buf);
+	len = adf_nbuf_len(wmi_cmd_buf);
+	OS_MEMZERO(buf_ptr, len);
 	adf_nbuf_free(wmi_cmd_buf);
 	adf_os_mem_free(htc_pkt);
 	adf_os_atomic_dec(&wmi_handle->pending_cmds);

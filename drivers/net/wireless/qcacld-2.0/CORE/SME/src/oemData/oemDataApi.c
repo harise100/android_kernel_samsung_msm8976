@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2014, 2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016, 2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -208,7 +208,7 @@ eHalStatus oemData_SendMBOemDataReq(tpAniSirGlobal pMac, tOemDataReq *pOemDataRe
 {
     eHalStatus status = eHAL_STATUS_SUCCESS;
     tSirOemDataReq* pMsg;
-    tCsrRoamSession *pSession = CSR_GET_SESSION( pMac, pOemDataReq->sessionId );
+    tCsrRoamSession *pSession;
 
     smsLog(pMac, LOGW, "OEM_DATA: entering Function %s", __func__);
 
@@ -217,6 +217,7 @@ eHalStatus oemData_SendMBOemDataReq(tpAniSirGlobal pMac, tOemDataReq *pOemDataRe
         return eHAL_STATUS_INVALID_PARAMETER;
     }
 
+    pSession = CSR_GET_SESSION(pMac, pOemDataReq->sessionId);
     pMsg = vos_mem_malloc(sizeof(*pMsg));
     if (NULL == pMsg) {
         smsLog(pMac, LOGE, "Memory Allocation failed. %s", __func__);
@@ -321,10 +322,10 @@ eHalStatus sme_HandleOemDataRsp(tHalHandle hHal, tANI_U8* pMsg)
                 if (csrLLRemoveEntry(&pMac->sme.smeCmdActiveList,
                                      &pCommand->Link, LL_ACCESS_LOCK))
                 {
-                    vos_mem_set(&(pCommand->u.oemDataCmd),
-                                sizeof(tOemDataCmd), 0);
                     req = &(pCommand->u.oemDataCmd.oemDataReq);
                     vos_mem_free(req->data);
+                    vos_mem_set(&(pCommand->u.oemDataCmd),
+                                sizeof(tOemDataCmd), 0);
                     smeReleaseCommand(pMac, pCommand);
                 }
             }
@@ -335,8 +336,11 @@ eHalStatus sme_HandleOemDataRsp(tHalHandle hHal, tANI_U8* pMsg)
         /* Send to upper layer only if rsp is from target */
         if (pOemDataRsp->target_rsp) {
             smsLog(pMac, LOG1, FL("received target oem data resp"));
-            send_oem_data_rsp_msg(sizeof(tOemDataRsp),
-                                  &pOemDataRsp->oemDataRsp[0]);
+            send_oem_data_rsp_msg(pOemDataRsp->rsp_len,
+                                  pOemDataRsp->oem_data_rsp);
+            /* free this memory only if rsp is from target */
+            vos_mem_free(pOemDataRsp->oem_data_rsp);
+            pOemDataRsp->oem_data_rsp = NULL;
         } else {
             smsLog(pMac, LOG1, FL("received internal oem data resp"));
         }

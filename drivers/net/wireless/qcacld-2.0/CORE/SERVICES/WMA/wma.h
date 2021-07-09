@@ -70,6 +70,7 @@
 #include "ol_txrx_types.h"
 #include "wlan_qct_wda.h"
 #include <linux/workqueue.h>
+#include "limTypes.h"
 
 /* Platform specific configuration for max. no. of fragments */
 #define QCA_OL_11AC_TX_MAX_FRAGS            2
@@ -99,6 +100,8 @@
 #define WMA_MAX_SUPPORTED_BSS     5
 
 #define FRAGMENT_SIZE 3072
+
+#define WMA_MAX_MGMT_MPDU_LEN     2000
 
 #define WMA_INVALID_VDEV_ID				0xFF
 #define MAX_MEM_CHUNKS					32
@@ -534,6 +537,7 @@ struct wma_txrx_node {
 	tANI_U8                 vht_capable;
 	tANI_U8                 ht_capable;
 	A_UINT32                mhz; /* channel frequency  in KHZ */
+	bool vdev_active;
 	v_BOOL_t vdev_up;
 	u_int64_t tsfadjust;
 	void     *addBssStaContext;
@@ -574,6 +578,8 @@ struct wma_txrx_node {
 	uint8_t nss_5g;
 
 	uint8_t wep_default_key_idx;
+	bool is_vdev_valid;
+
 };
 
 #if defined(QCA_WIFI_FTM)
@@ -703,6 +709,7 @@ typedef struct wma_handle {
 	wda_tgt_cfg_cb tgt_cfg_update_cb;
    /*Callback to indicate radar to HDD*/
    wda_dfs_radar_indication_cb dfs_radar_indication_cb;
+	wda_dfs_block_tx_cb dfs_block_tx_cb;
 	HAL_REG_CAPABILITIES reg_cap;
 	u_int32_t scan_id;
 	struct wma_txrx_node *interfaces;
@@ -755,6 +762,7 @@ typedef struct wma_handle {
 	 */
 	u_int8_t ol_ini_info;
 	v_BOOL_t ssdp;
+	bool enable_mc_list;
 	bool enable_bcst_ptrn;
 #ifdef FEATURE_RUNTIME_PM
 	v_BOOL_t runtime_pm;
@@ -778,6 +786,8 @@ typedef struct wma_handle {
 	int wow_nack;
 	u_int32_t ap_client_cnt;
 	adf_os_atomic_t is_wow_bus_suspended;
+	adf_os_atomic_t dfs_wmi_event_pending;
+	adf_os_atomic_t dfs_wmi_event_dropped;
 
 	vos_timer_t wma_scan_comp_timer;
 	scan_timer_info wma_scan_timer_info;
@@ -1602,6 +1612,22 @@ int ol_if_dfs_get_mib_cycle_counts_pct(struct ieee80211com *ic,
 u_int16_t ol_if_dfs_usenol(struct ieee80211com *ic);
 void ieee80211_mark_dfs(struct ieee80211com *ic,
                                struct ieee80211_channel *ichan);
+/**
+ * wma_update_dfs_cac_block_tx - to set dfs_cac_block_tx flag
+ * @cac_block_tx: value to be set
+ *
+ * Return: none
+ */
+void wma_update_dfs_cac_block_tx(bool cac_block_tx);
+/**
+ * ieee80211_update_dfs_cac_block_tx() - to set dfs_cac_block_tx flag
+ * @cac_block_tx: value to be set
+ *
+ * Return: none
+ */
+static inline void ieee80211_update_dfs_cac_block_tx(bool cac_block_tx) {
+	wma_update_dfs_cac_block_tx(cac_block_tx);
+}
 int  wma_dfs_indicate_radar(struct ieee80211com *ic,
                                struct ieee80211_channel *ichan);
 u_int16_t   dfs_usenol(struct ieee80211com *ic);
@@ -1705,5 +1731,22 @@ int wma_crash_inject(tp_wma_handle wma_handle, uint32_t type,
 			uint32_t delay_time_ms);
 
 uint32_t wma_get_vht_ch_width(void);
+
+/**
+ * wma_stop_radar_delay_timer() - stop radar delay found event timer
+ *
+ * Return: none
+ */
+void wma_stop_radar_delay_timer(void);
+
+/**
+ * wma_ignore_radar_soon_after_assoc() - ignore radar found 300ms after assoc
+ *
+ * Return: none
+ */
+void wma_ignore_radar_soon_after_assoc(void);
+
+WLAN_PHY_MODE wma_chan_to_mode(uint8_t chan, ePhyChanBondState chan_offset,
+		uint8_t vht_capable, uint8_t dot11_mode);
 
 #endif

@@ -738,25 +738,19 @@ typedef struct {
 
 #ifdef FEATURE_OEM_DATA_SUPPORT
 
-#ifndef OEM_DATA_REQ_SIZE
-#define OEM_DATA_REQ_SIZE 280
-#endif
-#ifndef OEM_DATA_RSP_SIZE
-#define OEM_DATA_RSP_SIZE 1724
-#endif
-
 typedef struct
 {
     tSirMacAddr          selfMacAddr;
     eHalStatus           status;
-    uint8_t              data_len;
+    uint32_t             data_len;
     uint8_t              *data;
 } tStartOemDataReq, *tpStartOemDataReq;
 
 typedef struct
 {
     bool                target_rsp;
-    tANI_U8             oemDataRsp[OEM_DATA_RSP_SIZE];
+    uint32_t            rsp_len;
+    uint8_t             *oem_data_rsp;
 } tStartOemDataRsp, *tpStartOemDataRsp;
 #endif
 

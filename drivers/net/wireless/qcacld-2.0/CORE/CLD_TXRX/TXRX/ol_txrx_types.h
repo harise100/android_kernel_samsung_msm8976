@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2016, 2018 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -85,6 +85,8 @@
 #define TXRX_DATA_HISTROGRAM_GRANULARITY      1000
 #define TXRX_DATA_HISTROGRAM_NUM_INTERVALS    100
 
+#define OL_TXRX_INVALID_VDEV_ID		(-1)
+
 struct ol_txrx_pdev_t;
 struct ol_txrx_vdev_t;
 struct ol_txrx_peer_t;
@@ -126,6 +128,7 @@ enum ol_tx_frm_type {
     ol_tx_frm_tso,     /* TSO segment, with a modified IP header added */
     ol_tx_frm_audio,   /* audio frames, with a custom LLC/SNAP header added */
     ol_tx_frm_no_free, /* frame requires special tx completion callback */
+    ol_tx_frm_freed = 0xff, /* the tx desc is in free list */
 };
 
 #if defined(CONFIG_HL_SUPPORT) && defined(QCA_BAD_PEER_TX_FLOW_CL)
@@ -165,6 +168,7 @@ typedef struct _tx_peer_threshold{
 struct ol_tx_desc_t {
 	adf_nbuf_t netbuf;
 	void *htt_tx_desc;
+	uint16_t id;
 	u_int32_t htt_tx_desc_paddr;
 	adf_os_atomic_t ref_cnt;
 	enum htt_tx_status status;
@@ -191,19 +195,18 @@ struct ol_tx_desc_t {
 	/* used by tx encap, to restore the os buf start offset after tx complete*/
 	u_int8_t orig_l2_hdr_bytes;
 #endif
+	u_int8_t vdev_id;
 #if defined(CONFIG_HL_SUPPORT)
 	struct ol_txrx_vdev_t* vdev;
 #endif
 	void *txq;
-	void *p_link;
-	uint16_t id;
 };
 
 typedef TAILQ_HEAD(, ol_tx_desc_t) ol_tx_desc_list;
 
-struct ol_tx_desc_list_elem_t {
-	struct ol_tx_desc_list_elem_t *next;
-	struct ol_tx_desc_t *tx_desc;
+union ol_tx_desc_list_elem_t {
+	union ol_tx_desc_list_elem_t *next;
+	struct ol_tx_desc_t tx_desc;
 };
 
 union ol_txrx_align_mac_addr_t {
@@ -405,7 +408,7 @@ typedef enum _throttle_phase {
 	THROTTLE_PHASE_MAX,
 } throttle_phase ;
 
-#define THROTTLE_TX_THRESHOLD (100)
+#define THROTTLE_TX_THRESHOLD (400)
 
 #ifdef IPA_UC_OFFLOAD
 typedef void (*ipa_uc_op_cb_type)(u_int8_t *op_msg, void *osif_ctxt);
@@ -427,6 +430,16 @@ struct ol_tx_group_credit_stats_t {
 	}stats[OL_TX_GROUP_STATS_LOG_SIZE];
 	u_int16_t last_valid_index;
 	u_int16_t wrap_around;
+};
+
+struct ol_txrx_fw_stats_desc_t {
+	struct ol_txrx_stats_req_internal *req;
+	unsigned char desc_id;
+};
+
+struct ol_txrx_fw_stats_desc_elem_t {
+	struct ol_txrx_fw_stats_desc_elem_t *next;
+	struct ol_txrx_fw_stats_desc_t desc;
 };
 
 /*
@@ -534,11 +547,23 @@ struct ol_txrx_pdev_t {
 	adf_os_atomic_t target_tx_credit;
 	adf_os_atomic_t orig_target_tx_credit;
 
+	struct {
+		uint16_t pool_size;
+		struct ol_txrx_fw_stats_desc_elem_t *pool;
+		struct ol_txrx_fw_stats_desc_elem_t *freelist;
+		adf_os_spinlock_t pool_lock;
+		adf_os_atomic_t initialized;
+	} ol_txrx_fw_stats_desc_pool;
+
 	/* Peer mac address to staid mapping */
 	struct ol_mac_addr mac_to_staid[WLAN_MAX_STA_COUNT + 3];
 
 	/* ol_txrx_vdev list */
 	TAILQ_HEAD(, ol_txrx_vdev_t) vdev_list;
+
+	TAILQ_HEAD(, ol_txrx_stats_req_internal) req_list;
+	int req_list_depth;
+	adf_os_spinlock_t req_list_spinlock;
 
 	/* peer ID to peer object map (array of pointers to peer objects) */
 	struct ol_txrx_peer_t **peer_id_to_obj_map;
@@ -592,8 +617,12 @@ struct ol_txrx_pdev_t {
 	struct {
 		u_int16_t pool_size;
 		u_int16_t num_free;
-		struct ol_tx_desc_list_elem_t *array;
-		struct ol_tx_desc_list_elem_t *freelist;
+		union ol_tx_desc_list_elem_t *freelist;
+		uint32_t page_size;
+		uint16_t desc_reserved_size;
+		uint8_t page_divider;
+		uint32_t offset_filter;
+		struct adf_os_mem_multi_page_t desc_pages;
 	} tx_desc;
 
 	struct {
@@ -828,12 +857,8 @@ struct ol_txrx_pdev_t {
 	u_int8_t ocb_peer_valid;
 	struct ol_txrx_peer_t *ocb_peer;
 	int tid_to_ac[OL_TX_NUM_TIDS + OL_TX_VDEV_NUM_QUEUES];
-
-	unsigned int page_size;
-	unsigned int desc_mem_size;
-	unsigned int num_desc_pages;
-	unsigned int num_descs_per_page;
-	void **desc_pages;
+	uint32_t total_bundle_queue_length;
+	struct ol_txrx_peer_t *self_peer;
 };
 
 struct ol_txrx_ocb_chan_info {
@@ -927,6 +952,17 @@ struct ol_txrx_vdev_t {
 	u_int16_t tx_fl_hwm;
 	ol_txrx_tx_flow_control_fp osif_flow_control_cb;
 
+	bool bundling_reqired;
+	struct {
+		struct {
+			adf_nbuf_t head;
+			adf_nbuf_t tail;
+			int depth;
+		} txq;
+		adf_os_spinlock_t mutex;
+		adf_os_timer_t timer;
+	} bundle_queue;
+
 #if defined(CONFIG_HL_SUPPORT) && defined(FEATURE_WLAN_TDLS)
         union ol_txrx_align_mac_addr_t hl_tdls_ap_mac_addr;
         bool hlTdlsFlag;
@@ -949,6 +985,13 @@ struct ol_txrx_vdev_t {
 	/* Information about the schedules in the schedule */
 	struct ol_txrx_ocb_chan_info *ocb_channel_info;
 	uint32_t ocb_channel_count;
+
+	/* Default OCB TX parameter */
+	struct ocb_tx_ctrl_hdr_t *ocb_def_tx_param;
+
+	/* intra bss forwarded tx and rx packets count */
+	uint64_t fwd_tx_packets;
+	uint64_t fwd_rx_packets;
 };
 
 struct ol_rx_reorder_array_elem_t {
@@ -1111,7 +1154,14 @@ struct ol_txrx_peer_t {
 	u_int16_t tx_limit_flag;
 	u_int16_t tx_pause_flag;
 #endif
+	adf_os_time_t last_assoc_rcvd;
+	adf_os_time_t last_disassoc_deauth_rcvd;
         struct ol_rx_reorder_history * reorder_history;
+};
+
+struct ol_fw_data {
+	void *data;
+	uint32_t len;
 };
 
 #endif /* _OL_TXRX_TYPES__H_ */

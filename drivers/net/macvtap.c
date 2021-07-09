@@ -678,7 +678,7 @@ static ssize_t macvtap_get_user(struct macvtap_queue *q, struct msghdr *m,
 	size_t linear;
 
 	if (q->flags & IFF_VNET_HDR) {
-		vnet_hdr_len = q->vnet_hdr_sz;
+		vnet_hdr_len = ACCESS_ONCE(q->vnet_hdr_sz);
 
 		err = -EINVAL;
 		if (len < vnet_hdr_len)
@@ -809,7 +809,7 @@ static ssize_t macvtap_put_user(struct macvtap_queue *q,
 
 	if (q->flags & IFF_VNET_HDR) {
 		struct virtio_net_hdr vnet_hdr;
-		vnet_hdr_len = q->vnet_hdr_sz;
+		vnet_hdr_len = ACCESS_ONCE(q->vnet_hdr_sz);
 		if ((len -= vnet_hdr_len) < 0)
 			return -EINVAL;
 
@@ -970,6 +970,8 @@ static long macvtap_ioctl(struct file *file, unsigned int cmd,
 	case TUNSETSNDBUF:
 		if (get_user(u, up))
 			return -EFAULT;
+		if (s <= 0)
+			return -EINVAL;
 
 		q->sk.sk_sndbuf = u;
 		return 0;

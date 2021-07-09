@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016, 2019 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -384,7 +384,8 @@ tSirRetStatus schSetFixedBeaconFields(tpAniSirGlobal pMac,tpPESession psessionEn
     }
 #endif
 
-    PopulateDot11fExtCap(pMac, isVHTEnabled, &pBcn2->ExtCap, psessionEntry);
+    if (psessionEntry->limSystemRole != eLIM_STA_IN_IBSS_ROLE)
+        PopulateDot11fExtCap(pMac, isVHTEnabled, &pBcn2->ExtCap, psessionEntry);
 
     PopulateDot11fExtSuppRates( pMac, POPULATE_DOT11F_RATES_OPERATIONAL,
                                 &pBcn2->ExtSuppRates, psessionEntry );
@@ -489,8 +490,9 @@ tSirRetStatus schSetFixedBeaconFields(tpAniSirGlobal pMac,tpPESession psessionEn
             schLog(pMac, LOG1, FL("extcap not extracted"));
         }
         /* merge extcap IE */
-        if (extcap_present)
-            lim_merge_extcap_struct(&pBcn2->ExtCap, &extracted_extcap);
+        if (extcap_present &&
+            psessionEntry->limSystemRole != eLIM_STA_IN_IBSS_ROLE)
+            lim_merge_extcap_struct(&pBcn2->ExtCap, &extracted_extcap, true);
 
     }
 
@@ -808,6 +810,12 @@ void writeBeaconToMemory(tpAniSirGlobal pMac, tANI_U16 size, tANI_U16 length, tp
     // copy end of beacon only if length > 0
     if (length > 0)
     {
+        if (size + psessionEntry->schBeaconOffsetEnd > SCH_MAX_BEACON_SIZE) {
+            schLog(pMac, LOGE,
+                   FL("beacon template fail size %d BeaconOffsetEnd %d"),
+                   size, psessionEntry->schBeaconOffsetEnd);
+            return;
+        }
         for (i=0; i < psessionEntry->schBeaconOffsetEnd; i++)
             psessionEntry->pSchBeaconFrameBegin[size++] = psessionEntry->pSchBeaconFrameEnd[i];
     }

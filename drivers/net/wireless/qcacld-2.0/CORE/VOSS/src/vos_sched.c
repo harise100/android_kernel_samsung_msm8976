@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -59,9 +59,7 @@
 #include <linux/kthread.h>
 #include <linux/cpu.h>
 #include <linux/topology.h>
-#if defined(QCA_CONFIG_SMP)
 #include "vos_cnss.h"
-#endif
 
 /*---------------------------------------------------------------------------
  * Preprocessor Definitions and Constants
@@ -78,8 +76,8 @@
 #define MAX_SSR_PROTECT_LOG (16)
 
 /* Timer value for detecting thread stuck issues */
-#define THREAD_STUCK_TIMER_VAL 5000 /* 5 seconds */
-#define THREAD_STUCK_COUNT 3
+#define THREAD_STUCK_TIMER_VAL 10000 /* 10 seconds */
+#define THREAD_STUCK_THRESHOLD 1
 
 static atomic_t ssr_protect_entry_count;
 static atomic_t load_unload_protect_count;
@@ -991,23 +989,33 @@ static void vos_wd_detect_thread_stuck(void)
 
 	spin_lock_irqsave(&gpVosWatchdogContext->thread_stuck_lock, flags);
 
-	if ((gpVosWatchdogContext->mc_thread_stuck_count
-				== THREAD_STUCK_COUNT)) {
+	if (gpVosWatchdogContext->mc_thread_stuck_count ==
+				THREAD_STUCK_THRESHOLD) {
 		spin_unlock_irqrestore(&gpVosWatchdogContext->thread_stuck_lock,
 				flags);
-		hddLog(LOGE, FL("%s: Thread Stuck!!! MC Count %d "),
-				__func__,
-				gpVosWatchdogContext->mc_thread_stuck_count);
+		hddLog(LOGE, FL("MC Thread Stuck!!!"));
 
-		vos_wlanRestart();
-		return;
+		vos_dump_stack(gpVosSchedContext->McThread);
+		vos_flush_logs(WLAN_LOG_TYPE_FATAL,
+			       WLAN_LOG_INDICATOR_HOST_ONLY,
+			       WLAN_LOG_REASON_THREAD_STUCK,
+			       true);
+		spin_lock_irqsave(&gpVosWatchdogContext->thread_stuck_lock,
+			flags);
+	}
+
+	if (!gpVosWatchdogContext->mc_thread_stuck_count) {
+		spin_unlock_irqrestore(&gpVosWatchdogContext->thread_stuck_lock,
+				flags);
+		vos_probe_threads();
+		spin_lock_irqsave(&gpVosWatchdogContext->thread_stuck_lock,
+				flags);
 	}
 
 	/* Increment the thread stuck count for all threads */
 	gpVosWatchdogContext->mc_thread_stuck_count++;
 
 	spin_unlock_irqrestore(&gpVosWatchdogContext->thread_stuck_lock, flags);
-	vos_probe_threads();
 
 	/* Restart the timer */
 	if (VOS_STATUS_SUCCESS !=
@@ -1077,7 +1085,7 @@ VosWDThread
   v_BOOL_t shutdown              = VOS_FALSE;
   int count                      = 0;
   VOS_STATUS vosStatus = VOS_STATUS_SUCCESS;
-  set_user_nice(current, -3);
+  set_user_nice(current, -4);
 
   if (Arg == NULL)
   {
@@ -1092,14 +1100,17 @@ VosWDThread
   /* Initialize the timer to detect thread stuck issues */
   if (vos_timer_init(&gpVosWatchdogContext->thread_stuck_timer,
         VOS_TIMER_TYPE_SW, vos_wd_detect_thread_stuck_cb, NULL)) {
-      hddLog(LOGE, FL("Unable to initialize thread stuck timer"));
+      VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                "Unable to initialize thread stuck timer");
   } else {
       if (VOS_STATUS_SUCCESS !=
               vos_timer_start(&gpVosWatchdogContext->thread_stuck_timer,
                            THREAD_STUCK_TIMER_VAL))
-          hddLog(LOGE, FL("Unable to start thread stuck timer"));
+          VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_ERROR,
+                        "Unable to start thread stuck timer");
       else
-          hddLog(LOGE, FL("Successfully started thread stuck timer"));
+          VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO,
+                        "Successfully started thread stuck timer");
   }
 
   /*
@@ -1124,6 +1135,22 @@ VosWDThread
     clear_bit(WD_POST_EVENT_MASK, &pWdContext->wdEventFlag);
     while(1)
     {
+      /* Post Msg to detect thread stuck */
+      if (test_and_clear_bit(WD_WLAN_DETECT_THREAD_STUCK_MASK,
+                                   &pWdContext->wdEventFlag)) {
+
+       if (!test_bit(MC_SUSPEND_EVENT_MASK, &gpVosSchedContext->mcEventFlag))
+            vos_wd_detect_thread_stuck();
+       else
+            VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO,
+               "%s: controller thread %s id: %d is suspended do not attemp probing",
+               __func__, current->comm, current->pid);
+        /*
+         * Process here and return without processing any SSR
+         * related logic.
+         */
+        break;
+      }
       /* Check for any Active Entry Points
        * If active, delay SSR until no entry point is active or
        * delay until count is decremented to ZERO
@@ -1206,11 +1233,6 @@ VosWDThread
           goto err_reset;
         }
         pWdContext->resetInProgress = false;
-      }
-      /* Post Msg to detect thread stuck */
-      else if (test_and_clear_bit(WD_WLAN_DETECT_THREAD_STUCK_MASK,
-                                          &pWdContext->wdEventFlag)) {
-        vos_wd_detect_thread_stuck();
       }
       else
       {
@@ -1955,6 +1977,12 @@ VOS_STATUS vos_watchdog_wlan_shutdown(void)
 */
 VOS_STATUS vos_watchdog_wlan_re_init(void)
 {
+    /* Make sure that Vos Watchdog context has been initialized */
+    if (gpVosWatchdogContext == NULL) {
+        VOS_TRACE(VOS_MODULE_ID_VOSS, VOS_TRACE_LEVEL_INFO,
+            "%s: gpVosWatchdogContext == NULL", __func__);
+        return VOS_STATUS_SUCCESS;
+    }
     /* watchdog task is still running, it is not closed in shutdown */
     set_bit(WD_WLAN_REINIT_EVENT_MASK, &gpVosWatchdogContext->wdEventFlag);
     set_bit(WD_POST_EVENT_MASK, &gpVosWatchdogContext->wdEventFlag);

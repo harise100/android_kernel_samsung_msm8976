@@ -1142,6 +1142,10 @@ static void handle_session_flush(enum command_response cmd, void *data)
 {
 	struct msm_vidc_cb_cmd_done *response = data;
 	struct msm_vidc_inst *inst;
+	struct v4l2_event flush_event = {0};
+	u32 *ptr = NULL;
+	enum hal_flush flush_type;
+	struct vidc_hal_session_flush_done *sesion_flush_done;
 	int rc;
 	if (response) {
 		inst = (struct msm_vidc_inst *)response->session_id;
@@ -1157,7 +1161,31 @@ static void handle_session_flush(enum command_response cmd, void *data)
 				}
 			}
 		}
-		msm_vidc_queue_v4l2_event(inst, V4L2_EVENT_MSM_VIDC_FLUSH_DONE);
+        	flush_event.type = V4L2_EVENT_MSM_VIDC_FLUSH_DONE;
+	        ptr = (u32 *)flush_event.u.data;
+
+        	sesion_flush_done = response->data;
+                flush_type = sesion_flush_done->flush_type;
+	        switch (flush_type) {
+        	case HAL_FLUSH_INPUT:
+                	ptr[0] = V4L2_QCOM_CMD_FLUSH_OUTPUT;
+                	break;
+	        case HAL_FLUSH_OUTPUT:
+        	        ptr[0] = V4L2_QCOM_CMD_FLUSH_CAPTURE;
+                	break;
+	        case HAL_FLUSH_ALL:
+        	        ptr[0] |= V4L2_QCOM_CMD_FLUSH_CAPTURE;
+                	ptr[0] |= V4L2_QCOM_CMD_FLUSH_OUTPUT;
+	                break;
+        	default:
+                	dprintk(VIDC_ERR, "Invalid flush type received!");
+	                return;
+        	}
+
+	        dprintk(VIDC_DBG,
+        	        "Notify flush complete, flush_type: %x\n", flush_type);
+        	v4l2_event_queue_fh(&inst->event_handler, &flush_event);
+
 	} else {
 		dprintk(VIDC_ERR, "Failed to get valid response for flush\n");
 	}
@@ -2670,7 +2698,7 @@ static int set_output_buffers(struct msm_vidc_inst *inst,
 {
 	int rc = 0;
 	struct msm_smem *handle;
-	struct internal_buf *binfo;
+	struct internal_buf *binfo = NULL;
 	u32 smem_flags = 0, buffer_size;
 	struct hal_buffer_requirements *output_buf, *extradata_buf;
 	int i;
@@ -2770,10 +2798,10 @@ static int set_output_buffers(struct msm_vidc_inst *inst,
 	}
 	return rc;
 fail_set_buffers:
-	kfree(binfo);
-fail_kzalloc:
 	msm_comm_smem_free(inst, handle);
 err_no_mem:
+	kfree(binfo);
+fail_kzalloc:
 	return rc;
 }
 

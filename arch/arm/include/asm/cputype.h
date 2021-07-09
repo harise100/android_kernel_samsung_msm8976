@@ -53,11 +53,16 @@
 #define ARM_CPU_PART_CORTEX_A5		0xC050
 #define ARM_CPU_PART_CORTEX_A15		0xC0F0
 #define ARM_CPU_PART_CORTEX_A7		0xC070
+#define ARM_CPU_PART_CORTEX_A57		0xd070
+#define ARM_CPU_PART_CORTEX_A72		0xd080
 
 #define ARM_CPU_XSCALE_ARCH_MASK	0xe000
 #define ARM_CPU_XSCALE_ARCH_V1		0x2000
 #define ARM_CPU_XSCALE_ARCH_V2		0x4000
 #define ARM_CPU_XSCALE_ARCH_V3		0x6000
+
+/* Qualcomm implemented cores */
+#define ARM_CPU_PART_SCORPION		0x510002d0
 
 extern unsigned int processor_id;
 

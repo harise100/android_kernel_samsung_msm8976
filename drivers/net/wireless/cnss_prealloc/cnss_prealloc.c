@@ -1,4 +1,4 @@
-/* Copyright (c) 2012,2014-2015 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012,2014-2016,2018 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,6 +16,7 @@
 #include <linux/wcnss_wlan.h>
 #include <linux/spinlock.h>
 #include <linux/skbuff.h>
+#include <net/cnss_prealloc.h>
 
 static DEFINE_SPINLOCK(alloc_lock);
 
@@ -25,7 +26,7 @@ static DEFINE_SPINLOCK(alloc_lock);
 
 struct wcnss_prealloc {
 	int occupied;
-	unsigned int size;
+	size_t size;
 	void *ptr;
 #ifdef CONFIG_SLUB_DEBUG
 	unsigned long stack_trace[WCNSS_MAX_STACK_TRACE];
@@ -122,7 +123,6 @@ int wcnss_prealloc_init(void)
 {
 	int i;
 
-	
 	for (i = 0; i < ARRAY_SIZE(wcnss_allocs); i++) {
 		wcnss_allocs[i].occupied = 0;
 		wcnss_allocs[i].ptr = kmalloc(wcnss_allocs[i].size, GFP_KERNEL);
@@ -132,13 +132,13 @@ int wcnss_prealloc_init(void)
 
 	for (i = 0; i < ARRAY_SIZE(wcnss_skb_allocs); i++) {
 		wcnss_skb_allocs[i].occupied = 0;
-		wcnss_skb_allocs[i].ptr = dev_alloc_skb(wcnss_skb_allocs[i].size);
+		wcnss_skb_allocs[i].ptr =
+				dev_alloc_skb(wcnss_skb_allocs[i].size);
 		if (wcnss_skb_allocs[i].ptr == NULL)
 			return -ENOMEM;
 	}
 	return 0;
 }
-EXPORT_SYMBOL(wcnss_prealloc_init);
 
 void wcnss_prealloc_deinit(void)
 {
@@ -154,7 +154,6 @@ void wcnss_prealloc_deinit(void)
 		wcnss_skb_allocs[i].ptr = NULL;
 	}
 }
-EXPORT_SYMBOL(wcnss_prealloc_deinit);
 
 #ifdef CONFIG_SLUB_DEBUG
 static void wcnss_prealloc_save_stack_trace(struct wcnss_prealloc *entry)
@@ -178,7 +177,7 @@ static inline void wcnss_prealloc_save_stack_trace(struct wcnss_prealloc *entry)
 }
 #endif
 
-void *wcnss_prealloc_get(unsigned int size)
+void *wcnss_prealloc_get(size_t size)
 {
 	int i = 0;
 	unsigned long flags;
@@ -188,10 +187,8 @@ void *wcnss_prealloc_get(unsigned int size)
 		if (wcnss_allocs[i].occupied)
 			continue;
 
-		if (wcnss_allocs[i].size > size) {
+		if (wcnss_allocs[i].size >= size) {
 			/* we found the slot */
-			pr_err("wcnss: %s: size: %d index %d\n",
-				__func__, size, i);
 			wcnss_allocs[i].occupied = 1;
 			spin_unlock_irqrestore(&alloc_lock, flags);
 			wcnss_prealloc_save_stack_trace(&wcnss_allocs[i]);
@@ -200,8 +197,8 @@ void *wcnss_prealloc_get(unsigned int size)
 	}
 	spin_unlock_irqrestore(&alloc_lock, flags);
 
-	pr_err("wcnss: %s: prealloc not available for size: %d\n",
-			__func__, size);
+	pr_err("wcnss: %s: prealloc not available for size: %zu\n",
+	       __func__, size);
 
 	return NULL;
 }
@@ -215,8 +212,6 @@ int wcnss_prealloc_put(void *ptr)
 	spin_lock_irqsave(&alloc_lock, flags);
 	for (i = 0; i < ARRAY_SIZE(wcnss_allocs); i++) {
 		if (wcnss_allocs[i].ptr == ptr) {
-			pr_err("wcnss: %s: index %d\n",
-				__func__, i);
 			wcnss_allocs[i].occupied = 0;
 			spin_unlock_irqrestore(&alloc_lock, flags);
 			return 1;
@@ -240,8 +235,6 @@ struct sk_buff *wcnss_skb_prealloc_get(unsigned int size)
 
 		if (wcnss_skb_allocs[i].size > size) {
 			/* we found the slot */
-			pr_err("wcnss: %s: size: %d index %d\n",
-				__func__, size, i);
 			wcnss_skb_allocs[i].occupied = 1;
 			spin_unlock_irqrestore(&alloc_lock, flags);
 			wcnss_prealloc_save_stack_trace(&wcnss_allocs[i]);
@@ -251,7 +244,7 @@ struct sk_buff *wcnss_skb_prealloc_get(unsigned int size)
 	spin_unlock_irqrestore(&alloc_lock, flags);
 
 	pr_err("wcnss: %s: prealloc not available for size: %d\n",
-			__func__, size);
+	       __func__, size);
 
 	return NULL;
 }
@@ -265,8 +258,6 @@ int wcnss_skb_prealloc_put(struct sk_buff *skb)
 	spin_lock_irqsave(&alloc_lock, flags);
 	for (i = 0; i < ARRAY_SIZE(wcnss_skb_allocs); i++) {
 		if (wcnss_skb_allocs[i].ptr == skb) {
-			pr_err("wcnss: %s: index %d\n",
-				__func__, i);
 			wcnss_skb_allocs[i].occupied = 0;
 			spin_unlock_irqrestore(&alloc_lock, flags);
 			return 1;
@@ -292,8 +283,8 @@ void wcnss_prealloc_check_memory_leak(void)
 			j++;
 		}
 
-		pr_err("Size: %u, addr: %pK, backtrace:\n",
-				wcnss_allocs[i].size, wcnss_allocs[i].ptr);
+		pr_err("Size: %zu, addr: %pK, backtrace:\n",
+		       wcnss_allocs[i].size, wcnss_allocs[i].ptr);
 		print_stack_trace(&wcnss_allocs[i].trace, 1);
 	}
 

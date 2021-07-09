@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2013-2014 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2018 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -516,6 +516,8 @@ void
 limSetEdcaBcastACMFlag(tpAniSirGlobal pMac, tANI_U32 ac, tANI_U32 acmFlag)
 {
     tpPESession psessionEntry = &pMac->lim.gpSession[0];
+    if (ac >= MAX_NUM_AC)
+        return;
     psessionEntry->gLimEdcaParamsBC[ac].aci.acm = (tANI_U8)acmFlag;
     psessionEntry->gLimEdcaParamSetCount++;
     schSetFixedBeaconFields(pMac,psessionEntry);
@@ -1816,7 +1818,7 @@ dump_lim_ft_event( tpAniSirGlobal pMac, tANI_U32 arg1, tANI_U32 arg2, tANI_U32 a
             p += log_sprintf( pMac, p, "%s: Session %02x %02x %02x\n", __func__,
                   psessionEntry->bssId[0],
                   psessionEntry->bssId[1], psessionEntry->bssId[2]);
-            p += log_sprintf( pMac, p, "%s: Session %02x %02x %02x %p\n",
+            p += log_sprintf( pMac, p, "%s: Session %02x %02x %02x %pK\n",
                   __func__,
                   pftPreAuthReq->currbssId[0],
                   pftPreAuthReq->currbssId[1],

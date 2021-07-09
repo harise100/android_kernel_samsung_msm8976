@@ -179,16 +179,17 @@ typedef struct tagCsrScanResult
        we have equal preferValue */
     tANI_U32 capValue;
 
-    /*
-     * This member must be the last in the structure because the end of
-     * tSirBssDescription (inside) is an array with non known size at this time
-     */
-
     eCsrEncryptionType ucEncryptionType; //Preferred Encryption type that matched with profile.
     eCsrEncryptionType mcEncryptionType;
     eCsrAuthType authType; //Preferred auth type that matched with the profile.
 
     tCsrScanResultInfo Result;
+    /*
+     * WARNING - Do not add any element here
+     * This member Result must be the last in the structure because the end
+     * of tSirBssDescription (inside) is an array with nonknown size at
+     * this time.
+     */
 }tCsrScanResult;
 
 typedef struct
@@ -1079,3 +1080,6 @@ csr_get_bssdescr_from_scan_handle(tScanResultHandle result_handle,
                                   tSirBssDescription *bss_descr);
 eHalStatus csr_prepare_disconnect_command(tpAniSirGlobal mac,
                                     tANI_U32 session_id, tSmeCmd **sme_cmd);
+
+void csr_remove_bssid_from_scan_list(tpAniSirGlobal mac_ctx,
+                                     tSirMacAddr bssid);

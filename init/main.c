@@ -273,6 +273,27 @@ static int __init repair_env_string(char *param, char *val, const char *unused)
 	return 0;
 }
 
+/* Anything after -- gets handed straight to init. */
+static int __init set_init_arg(char *param, char *val, const char *unused)
+{
+	unsigned int i;
+
+	if (panic_later)
+		return 0;
+
+	repair_env_string(param, val, unused);
+
+	for (i = 0; argv_init[i]; i++) {
+		if (i == MAX_INIT_ARGS) {
+			panic_later = "init";
+			panic_param = param;
+			return 0;
+		}
+	}
+	argv_init[i] = param;
+	return 0;
+}
+
 /*
  * Unknown boot options get handed to init, unless they look like
  * unused parameters (modprobe will find them in /proc/cmdline).
@@ -507,7 +528,7 @@ static void __init mm_init(void)
 
 asmlinkage void __init start_kernel(void)
 {
-	char * command_line;
+	char * command_line, *after_dashes;
 	extern const struct kernel_param __start___param[], __stop___param[];
 
 	/*
@@ -546,12 +567,16 @@ asmlinkage void __init start_kernel(void)
 	page_alloc_init();
 
 	pr_notice("Kernel command line: %s\n", boot_command_line);
-	parse_early_param();
-	parse_args("Booting kernel", static_command_line, __start___param,
-		   __stop___param - __start___param,
-		   -1, -1, &unknown_bootoption);
-
+	/* parameters may set static keys */
 	jump_label_init();
+	parse_early_param();
+	after_dashes = parse_args("Booting kernel",
+				  static_command_line, __start___param,
+				  __stop___param - __start___param,
+				  -1, -1, &unknown_bootoption);
+	if (!IS_ERR_OR_NULL(after_dashes))
+		parse_args("Setting init args", after_dashes, NULL, 0, -1, -1,
+			   set_init_arg);
 
 	/*
 	 * These use large bootmem allocations and must precede
@@ -848,10 +873,26 @@ static int run_init_process(const char *init_filename)
 		(const char __user *const __user *)envp_init);
 }
 
+static int try_to_run_init_process(const char *init_filename)
+{
+	int ret;
+
+	ret = run_init_process(init_filename);
+
+	if (ret && ret != -ENOENT) {
+		pr_err("Starting init: %s exists but couldn't execute it (error %d)\n",
+		       init_filename, ret);
+	}
+
+	return ret;
+}
+
 static noinline void __init kernel_init_freeable(void);
 
 static int __ref kernel_init(void *unused)
 {
+	int ret;
+
 	kernel_init_freeable();
 	/* need to finish all async __init code before freeing the memory */
 	async_synchronize_full();
@@ -863,9 +904,11 @@ static int __ref kernel_init(void *unused)
 	flush_delayed_fput();
 
 	if (ramdisk_execute_command) {
-		if (!run_init_process(ramdisk_execute_command))
+		ret = run_init_process(ramdisk_execute_command);
+		if (!ret)
 			return 0;
-		pr_err("Failed to execute %s\n", ramdisk_execute_command);
+		pr_err("Failed to execute %s (error %d)\n",
+		       ramdisk_execute_command, ret);
 	}
 
 	/*
@@ -875,18 +918,19 @@ static int __ref kernel_init(void *unused)
 	 * trying to recover a really broken machine.
 	 */
 	if (execute_command) {
-		if (!run_init_process(execute_command))
+		ret = run_init_process(execute_command);
+		if (!ret)
 			return 0;
-		pr_err("Failed to execute %s.  Attempting defaults...\n",
-			execute_command);
+		pr_err("Failed to execute %s (error %d).  Attempting defaults...\n",
+			execute_command, ret);
 	}
-	if (!run_init_process("/sbin/init") ||
-	    !run_init_process("/etc/init") ||
-	    !run_init_process("/bin/init") ||
-	    !run_init_process("/bin/sh"))
+	if (!try_to_run_init_process("/sbin/init") ||
+	    !try_to_run_init_process("/etc/init") ||
+	    !try_to_run_init_process("/bin/init") ||
+	    !try_to_run_init_process("/bin/sh"))
 		return 0;
 
-	panic("No init found.  Try passing init= option to kernel. "
+	panic("No working init found.  Try passing init= option to kernel. "
 	      "See Linux Documentation/init.txt for guidance.");
 }
 

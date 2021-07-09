@@ -28,8 +28,8 @@
 #include <linux/regulator/consumer.h>
 #include <net/cnss.h>
 
-#define BT_PWR_DBG(fmt, arg...)  pr_err("[BT] %s: " fmt "\n" , __func__ , ## arg)
-#define BT_PWR_INFO(fmt, arg...) pr_err("[BT] %s: " fmt "\n" , __func__ , ## arg)
+#define BT_PWR_DBG(fmt, arg...)  pr_debug("[BT] %s: " fmt "\n" , __func__ , ## arg)
+#define BT_PWR_INFO(fmt, arg...) pr_info("[BT] %s: " fmt "\n" , __func__ , ## arg)
 #define BT_PWR_ERR(fmt, arg...)  pr_err("[BT] %s: " fmt "\n" , __func__ , ## arg)
 
 
@@ -157,6 +157,13 @@ static int bt_configure_gpios(int on)
 	BT_PWR_DBG("%s  bt_gpio= %d on: %d", __func__, bt_reset_gpio, on);
 
 	if (on) {
+		rc = gpio_request(bt_reset_gpio, "bt_sys_rst_n");
+		if (rc) {
+			BT_PWR_ERR("unable to request gpio %d (%d)\n",
+				   bt_reset_gpio, rc);
+			return rc;
+		}
+
 		rc = gpio_direction_output(bt_reset_gpio, 0);
 		if (rc) {
 			BT_PWR_ERR("Unable to set direction\n");
@@ -400,19 +407,6 @@ static int bt_power_populate_dt_pinfo(struct platform_device *pdev)
 		if (bt_power_pdata->bt_gpio_sys_rst < 0) {
 			BT_PWR_ERR("bt-reset-gpio not provided in device tree");
 			return bt_power_pdata->bt_gpio_sys_rst;
-		}
-
-		rc = gpio_request(bt_power_pdata->bt_gpio_sys_rst, "bt_sys_rst_n");
-		if (rc) {
-			BT_PWR_ERR("unable to request gpio %d (%d)\n",
-					bt_power_pdata->bt_gpio_sys_rst, rc);
-			return rc;
-		}
-
-		rc = gpio_direction_output(bt_power_pdata->bt_gpio_sys_rst, 0);
-		if (rc) {
-			BT_PWR_ERR("Unable to set direction\n");
-			return rc;
 		}
 
 		rc = bt_dt_parse_vreg_info(&pdev->dev,

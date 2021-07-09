@@ -5,44 +5,12 @@
 
 #include <linux/bitmap.h>
 #include <linux/if.h>
+#include <linux/ip.h>
 #include <linux/netdevice.h>
 #include <linux/rcupdate.h>
 #include <linux/timer.h>
 #include <linux/sysctl.h>
 #include <linux/rtnetlink.h>
-
-enum
-{
-	IPV4_DEVCONF_FORWARDING=1,
-	IPV4_DEVCONF_MC_FORWARDING,
-	IPV4_DEVCONF_PROXY_ARP,
-	IPV4_DEVCONF_ACCEPT_REDIRECTS,
-	IPV4_DEVCONF_SECURE_REDIRECTS,
-	IPV4_DEVCONF_SEND_REDIRECTS,
-	IPV4_DEVCONF_SHARED_MEDIA,
-	IPV4_DEVCONF_RP_FILTER,
-	IPV4_DEVCONF_ACCEPT_SOURCE_ROUTE,
-	IPV4_DEVCONF_BOOTP_RELAY,
-	IPV4_DEVCONF_LOG_MARTIANS,
-	IPV4_DEVCONF_TAG,
-	IPV4_DEVCONF_ARPFILTER,
-	IPV4_DEVCONF_MEDIUM_ID,
-	IPV4_DEVCONF_NOXFRM,
-	IPV4_DEVCONF_NOPOLICY,
-	IPV4_DEVCONF_FORCE_IGMP_VERSION,
-	IPV4_DEVCONF_ARP_ANNOUNCE,
-	IPV4_DEVCONF_ARP_IGNORE,
-	IPV4_DEVCONF_PROMOTE_SECONDARIES,
-	IPV4_DEVCONF_ARP_ACCEPT,
-	IPV4_DEVCONF_ARP_NOTIFY,
-	IPV4_DEVCONF_ACCEPT_LOCAL,
-	IPV4_DEVCONF_SRC_VMARK,
-	IPV4_DEVCONF_PROXY_ARP_PVLAN,
-	IPV4_DEVCONF_ROUTE_LOCALNET,
-	__IPV4_DEVCONF_MAX
-};
-
-#define IPV4_DEVCONF_MAX (__IPV4_DEVCONF_MAX - 1)
 
 struct ipv4_devconf {
 	void	*sysctl;
@@ -50,12 +18,17 @@ struct ipv4_devconf {
 	DECLARE_BITMAP(state, IPV4_DEVCONF_MAX);
 };
 
+#define MC_HASH_SZ_LOG 9
+
 struct in_device {
 	struct net_device	*dev;
 	atomic_t		refcnt;
 	int			dead;
 	struct in_ifaddr	*ifa_list;	/* IP ifaddr chain		*/
+
 	struct ip_mc_list __rcu	*mc_list;	/* IP multicast filter chain    */
+	struct ip_mc_list __rcu	* __rcu *mc_hash;
+
 	int			mc_count;	/* Number of installed mcasts	*/
 	spinlock_t		mc_tomb_lock;
 	struct ip_mc_list	*mc_tomb;
@@ -191,7 +164,8 @@ extern int		devinet_ioctl(struct net *net, unsigned int cmd, void __user *);
 extern void		devinet_init(void);
 extern struct in_device	*inetdev_by_index(struct net *, int);
 extern __be32		inet_select_addr(const struct net_device *dev, __be32 dst, int scope);
-extern __be32		inet_confirm_addr(struct in_device *in_dev, __be32 dst, __be32 local, int scope);
+extern __be32		inet_confirm_addr(struct net *net, struct in_device *in_dev, __be32 dst,
+					  __be32 local, int scope);
 extern struct in_ifaddr *inet_ifa_byprefix(struct in_device *in_dev, __be32 prefix, __be32 mask);
 
 static __inline__ int inet_ifa_match(__be32 addr, struct in_ifaddr *ifa)

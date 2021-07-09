@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2016, 2018 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -137,6 +137,8 @@ static void HTT_RX_FRAG_SET_LAST_MSDU(
 }
 #endif /* CONFIG_HL_SUPPORT */
 
+#define MAX_TARGET_TX_CREDIT    204800
+
 /* Target to host Msg/event  handler  for low priority messages*/
 void
 htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
@@ -172,8 +174,14 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
         {
             u_int16_t peer_id;
             u_int8_t tid;
-            int seq_num_start, seq_num_end;
+            u_int16_t seq_num_start, seq_num_end;
             enum htt_rx_flush_action action;
+
+            if (adf_nbuf_len(htt_t2h_msg) < HTT_RX_FLUSH_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
 
             peer_id = HTT_RX_FLUSH_PEER_ID_GET(*msg_word);
             tid = HTT_RX_FLUSH_TID_GET(*msg_word);
@@ -192,7 +200,7 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
         }
     case  HTT_T2H_MSG_TYPE_RX_OFFLOAD_DELIVER_IND:
         {
-            int msdu_cnt;
+            u_int16_t msdu_cnt;
             msdu_cnt = HTT_RX_OFFLOAD_DELIVER_IND_MSDU_CNT_GET(*msg_word);
             ol_rx_offload_deliver_ind_handler(
                 pdev->txrx_pdev,
@@ -209,6 +217,13 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
         {
             u_int16_t peer_id;
             u_int8_t tid;
+            int msg_len = adf_nbuf_len(htt_t2h_msg);
+
+            if (msg_len < HTT_RX_FRAG_IND_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
 
             peer_id = HTT_RX_FRAG_IND_PEER_ID_GET(*msg_word);
             tid = HTT_RX_FRAG_IND_EXT_TID_GET(*msg_word);
@@ -292,10 +307,24 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
             u_int16_t peer_id;
             u_int8_t vdev_id;
 
+            if (adf_nbuf_len(htt_t2h_msg) < HTT_RX_PEER_MAP_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
+
             peer_id = HTT_RX_PEER_MAP_PEER_ID_GET(*msg_word);
             vdev_id = HTT_RX_PEER_MAP_VDEV_ID_GET(*msg_word);
             peer_mac_addr = htt_t2h_mac_addr_deswizzle(
                 (u_int8_t *) (msg_word+1), &mac_addr_deswizzle_buf[0]);
+
+            if (peer_id > ol_cfg_max_peer_id(pdev->ctrl_pdev)) {
+                adf_os_print("%s: HTT_T2H_MSG_TYPE_PEER_MAP,"
+                            "invalid peer_id, %u\n",
+                            __FUNCTION__,
+                            peer_id);
+                break;
+            }
 
             ol_rx_peer_map_handler(
                 pdev->txrx_pdev, peer_id, vdev_id, peer_mac_addr, 1/*can tx*/);
@@ -304,7 +333,22 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
     case HTT_T2H_MSG_TYPE_PEER_UNMAP:
         {
             u_int16_t peer_id;
+
+            if (adf_nbuf_len(htt_t2h_msg) < HTT_RX_PEER_UNMAP_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
+
             peer_id = HTT_RX_PEER_UNMAP_PEER_ID_GET(*msg_word);
+
+            if (peer_id > ol_cfg_max_peer_id(pdev->ctrl_pdev)) {
+                adf_os_print("%s: HTT_T2H_MSG_TYPE_PEER_UNMAP,"
+                            "invalid peer_id, %u\n",
+                            __FUNCTION__,
+                            peer_id);
+                break;
+            }
 
             ol_rx_peer_unmap_handler(pdev->txrx_pdev, peer_id);
             break;
@@ -314,6 +358,12 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
             u_int16_t peer_id;
             enum htt_sec_type sec_type;
             int is_unicast;
+
+            if (adf_nbuf_len(htt_t2h_msg) < HTT_SEC_IND_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
 
             peer_id = HTT_SEC_IND_PEER_ID_GET(*msg_word);
             sec_type = HTT_SEC_IND_SEC_TYPE_GET(*msg_word);
@@ -353,11 +403,10 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
 #if TXRX_STATS_LEVEL != TXRX_STATS_LEVEL_OFF
     case HTT_T2H_MSG_TYPE_STATS_CONF:
         {
-            u_int64_t cookie;
+            u_int8_t cookie;
             u_int8_t *stats_info_list;
 
             cookie = *(msg_word + 1);
-            cookie |= ((u_int64_t) (*(msg_word + 2))) << 32;
 
             stats_info_list = (u_int8_t *) (msg_word + 3);
             htc_pm_runtime_put(pdev->htc_pdev);
@@ -370,7 +419,13 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
         {
             u_int32_t *pl_hdr;
             u_int32_t log_type;
+            uint32_t len = adf_nbuf_len(htt_t2h_msg);
+            struct ol_fw_data pl_fw_data;
+
             pl_hdr = (msg_word + 1);
+            pl_fw_data.data = pl_hdr;
+            pl_fw_data.len = len - sizeof(*msg_word);
+
             log_type = (*(pl_hdr + 1) & ATH_PKTLOG_HDR_LOG_TYPE_MASK) >>
                                             ATH_PKTLOG_HDR_LOG_TYPE_SHIFT;
             if (log_type == PKTLOG_TYPE_TX_CTRL ||
@@ -378,14 +433,14 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
                (log_type) == PKTLOG_TYPE_TX_MSDU_ID ||
                (log_type) == PKTLOG_TYPE_TX_FRM_HDR ||
                (log_type) == PKTLOG_TYPE_TX_VIRT_ADDR) {
-                wdi_event_handler(WDI_EVENT_TX_STATUS, pdev->txrx_pdev, pl_hdr);
+                wdi_event_handler(WDI_EVENT_TX_STATUS, pdev->txrx_pdev, &pl_fw_data);
             } else if ((log_type) == PKTLOG_TYPE_RC_FIND) {
-                wdi_event_handler(WDI_EVENT_RATE_FIND, pdev->txrx_pdev, pl_hdr);
+                wdi_event_handler(WDI_EVENT_RATE_FIND, pdev->txrx_pdev, &pl_fw_data);
             } else if ((log_type) == PKTLOG_TYPE_RC_UPDATE) {
                 wdi_event_handler(
-                    WDI_EVENT_RATE_UPDATE, pdev->txrx_pdev, pl_hdr);
+                    WDI_EVENT_RATE_UPDATE, pdev->txrx_pdev, &pl_fw_data);
             } else if ((log_type) == PKTLOG_TYPE_RX_STAT) {
-                wdi_event_handler(WDI_EVENT_RX_DESC, pdev->txrx_pdev, pl_hdr);
+                wdi_event_handler(WDI_EVENT_RX_DESC, pdev->txrx_pdev, &pl_fw_data);
             }
             break;
         }
@@ -394,11 +449,28 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
     {
         u_int32_t htt_credit_delta_abs;
         int32_t htt_credit_delta;
-        int sign;
+        int sign, old_credit;
+
+        if (adf_nbuf_len(htt_t2h_msg) < HTT_TX_CREDIT_MSG_BYTES) {
+            adf_os_print("invalid nbuff len");
+            WARN_ON(1);
+            break;
+        }
 
         htt_credit_delta_abs = HTT_TX_CREDIT_DELTA_ABS_GET(*msg_word);
         sign = HTT_TX_CREDIT_SIGN_BIT_GET(*msg_word) ? -1 : 1;
         htt_credit_delta = sign * htt_credit_delta_abs;
+
+        old_credit = adf_os_atomic_read(&pdev->htt_tx_credit.target_delta);
+        if (((old_credit + htt_credit_delta) > MAX_TARGET_TX_CREDIT) ||
+            ((old_credit + htt_credit_delta) < -MAX_TARGET_TX_CREDIT)) {
+            adf_os_print("%s: invalid credit update,old_credit=%d,"
+                        "htt_credit_delta=%d\n",
+                        __FUNCTION__,
+                        old_credit,
+                        htt_credit_delta);
+            break;
+        }
 
         if (pdev->cfg.is_high_latency &&
             !pdev->cfg.default_tx_comp_req) {
@@ -457,7 +529,16 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
                 struct ol_txrx_vdev_t *vdev;
                 struct ol_txrx_peer_t *peer;
                 u_int8_t * pn_ptr;
-                u_int16_t peer_id =
+                u_int16_t peer_id;
+                int msg_len = adf_nbuf_len(htt_t2h_msg);
+
+                if (msg_len < HTT_RX_OFLD_PKT_ERR_MIC_ERR_BYTES) {
+                    adf_os_print("invalid nbuff len");
+                    WARN_ON(1);
+                    break;
+                }
+
+                peer_id =
                      HTT_RX_OFLD_PKT_ERR_MIC_ERR_PEER_ID_GET(*(msg_word + 1));
 
                 peer = ol_txrx_peer_find_by_id(pdev->txrx_pdev, peer_id);
@@ -495,16 +576,25 @@ htt_t2h_lp_msg_handler(void *context, adf_nbuf_t htt_t2h_msg )
                 break;
             }
         }
+        break;
     }
     case HTT_T2H_MSG_TYPE_RATE_REPORT:
         {
             u_int16_t peer_cnt = HTT_PEER_RATE_REPORT_MSG_PEER_COUNT_GET(*msg_word);
             u_int16_t i;
             struct rate_report_t *report, *each;
+            int max_peers;
 
             /* Param sanity check */
             if (peer_cnt == 0) {
                 adf_os_print("RATE REPORT messsage peer_cnt is 0! \n");
+                break;
+            }
+
+            max_peers = ol_cfg_max_peer_id(pdev->ctrl_pdev) + 1;
+            if (peer_cnt > max_peers) {
+                adf_os_print("RATE REPORT msg peer_cnt is larger than %d\n",
+                    max_peers);
                 break;
             }
 
@@ -581,6 +671,8 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
             unsigned num_msdu_bytes;
             u_int16_t peer_id;
             u_int8_t tid;
+            u_int32_t msg_len = adf_nbuf_len(htt_t2h_msg);
+            unsigned int calculated_msg_len;
 
             if (adf_os_unlikely(pdev->cfg.is_full_reorder_offload)) {
                 adf_os_print("HTT_T2H_MSG_TYPE_RX_IND not supported with full "
@@ -609,6 +701,34 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
             num_mpdu_ranges = HTT_RX_IND_NUM_MPDU_RANGES_GET(*(msg_word + 1));
             pdev->rx_ind_msdu_byte_idx = 0;
 
+            if (unlikely(pdev->rx_mpdu_range_offset_words > msg_len)) {
+                adf_os_print("HTT_T2H_MSG_TYPE_RX_IND, invalid rx_mpdu_range_offset_words %d\n",
+                                      pdev->rx_mpdu_range_offset_words);
+                WARN_ON(1);
+                break;
+            }
+            calculated_msg_len = pdev->rx_mpdu_range_offset_words +
+                                                     (num_mpdu_ranges *
+                                                     (int)sizeof(uint32_t));
+            /*
+             * Check that the addition and multiplication
+             * do not cause integer overflow
+             */
+            if (unlikely(calculated_msg_len <
+                                     pdev->rx_mpdu_range_offset_words)) {
+                        adf_os_print("HTT_T2H_MSG_TYPE_RX_IND, invalid mpdu_ranges %u\n",
+                                                (num_mpdu_ranges *
+                                                (int)sizeof(uint32_t)));
+                        WARN_ON(1);
+                        break;
+            }
+            if (unlikely(calculated_msg_len > msg_len)) {
+                        adf_os_print("HTT_T2H_MSG_TYPE_RX_IND, invalid offset_words + mpdu_ranges %u\n",
+                                      calculated_msg_len);
+                        WARN_ON(1);
+                        break;
+            }
+
             if (pdev->cfg.is_high_latency) {
                 /*
                  * TODO: remove copy after stopping reuse skb on HIF layer
@@ -628,12 +748,29 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
         }
     case HTT_T2H_MSG_TYPE_TX_COMPL_IND:
         {
+            int old_credit;
             int num_msdus;
             enum htt_tx_status status;
+            int msg_len = adf_nbuf_len(htt_t2h_msg);
 
             /* status - no enum translation needed */
             status = HTT_TX_COMPL_IND_STATUS_GET(*msg_word);
             num_msdus = HTT_TX_COMPL_IND_NUM_GET(*msg_word);
+
+            /*
+             * each desc id will occupy 2 bytes.
+             * the 4 is for htt msg header
+             */
+            if ((num_msdus * HTT_TX_COMPL_BYTES_PER_MSDU_ID +
+                HTT_TX_COMPL_HEAD_SZ) > msg_len) {
+                adf_os_print("%s: num_msdus(%d) is invalid,"
+                            "adf_nbuf_len = %d\n",
+                            __FUNCTION__,
+                            num_msdus,
+                            msg_len);
+                break;
+            }
+
             if (num_msdus & 0x1) {
                 struct htt_tx_compl_ind_base *compl = (void *)msg_word;
 
@@ -651,19 +788,30 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
             }
 
             if (pdev->cfg.is_high_latency) {
-                if (!pdev->cfg.default_tx_comp_req) {
-                    int credit_delta;
-                    HTT_TX_MUTEX_ACQUIRE(&pdev->credit_mutex);
-                    adf_os_atomic_add(num_msdus,
-                        &pdev->htt_tx_credit.target_delta);
-                    credit_delta = htt_tx_credit_update(pdev);
-                    HTT_TX_MUTEX_RELEASE(&pdev->credit_mutex);
-                    if (credit_delta) {
-                        ol_tx_target_credit_update(pdev->txrx_pdev,
-                                                   credit_delta);
-                    }
+                old_credit = adf_os_atomic_read(&pdev->htt_tx_credit.target_delta);
+                if (((old_credit + num_msdus) > MAX_TARGET_TX_CREDIT) ||
+                    ((old_credit + num_msdus) < -MAX_TARGET_TX_CREDIT)) {
+                    adf_os_print("%s: invalid credit update,old_credit=%d,"
+                                "num_msdus=%d\n",
+                                __FUNCTION__,
+                                old_credit,
+                                num_msdus);
                 } else {
-                    ol_tx_target_credit_update(pdev->txrx_pdev, num_msdus);
+                    if (!pdev->cfg.default_tx_comp_req) {
+                        int credit_delta;
+                        HTT_TX_MUTEX_ACQUIRE(&pdev->credit_mutex);
+                        adf_os_atomic_add(num_msdus,
+                            &pdev->htt_tx_credit.target_delta);
+                        credit_delta = htt_tx_credit_update(pdev);
+                        HTT_TX_MUTEX_RELEASE(&pdev->credit_mutex);
+                        if (credit_delta) {
+                            ol_tx_target_credit_update(pdev->txrx_pdev,
+                                                       credit_delta);
+                        }
+                    } else {
+                        ol_tx_target_credit_update(pdev->txrx_pdev,
+                                                   num_msdus);
+                    }
                 }
             }
             ol_tx_completion_handler(
@@ -675,7 +823,14 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
         {
             u_int16_t peer_id;
             u_int8_t tid, pn_ie_cnt, *pn_ie=NULL;
-            int seq_num_start, seq_num_end;
+            u_int16_t seq_num_start, seq_num_end;
+            int msg_len = adf_nbuf_len(htt_t2h_msg);
+
+            if (msg_len < HTT_RX_PN_IND_BYTES) {
+                adf_os_print("invalid nbuff len");
+                WARN_ON(1);
+                break;
+            }
 
             /*First dword */
             peer_id = HTT_RX_PN_IND_PEER_ID_GET(*msg_word);
@@ -686,6 +841,13 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
             seq_num_start = HTT_RX_PN_IND_SEQ_NUM_START_GET(*msg_word);
             seq_num_end = HTT_RX_PN_IND_SEQ_NUM_END_GET(*msg_word);
             pn_ie_cnt = HTT_RX_PN_IND_PN_IE_CNT_GET(*msg_word);
+
+            if (msg_len - HTT_RX_PN_IND_BYTES <
+                pn_ie_cnt * sizeof(uint8_t)) {
+                adf_os_print("invalid pn_ie len");
+                WARN_ON(1);
+                break;
+            }
 
             msg_word++;
             /*Third dword*/
@@ -702,8 +864,23 @@ if (adf_os_unlikely(pdev->rx_ring.rx_reset)) {
     case HTT_T2H_MSG_TYPE_TX_INSPECT_IND:
         {
             int num_msdus;
+            int msg_len = adf_nbuf_len(htt_t2h_msg);
 
             num_msdus = HTT_TX_COMPL_IND_NUM_GET(*msg_word);
+            /*
+             * each desc id will occupy 2 bytes.
+             * the 4 is for htt msg header
+             */
+            if ((num_msdus * HTT_TX_COMPL_BYTES_PER_MSDU_ID +
+                HTT_TX_COMPL_HEAD_SZ) > msg_len) {
+                adf_os_print("%s: num_msdus(%d) is invalid,"
+                            "adf_nbuf_len = %d,inspect\n",
+                            __FUNCTION__,
+                            num_msdus,
+                            msg_len);
+                break;
+            }
+
             if (num_msdus & 0x1) {
                 struct htt_tx_compl_ind_base *compl = (void *)msg_word;
 
@@ -1077,8 +1254,8 @@ void
 htt_rx_frag_ind_flush_seq_num_range(
     htt_pdev_handle pdev,
     adf_nbuf_t rx_frag_ind_msg,
-    int *seq_num_start,
-    int *seq_num_end)
+    u_int16_t *seq_num_start,
+    u_int16_t *seq_num_end)
 {
     u_int32_t *msg_word;
 

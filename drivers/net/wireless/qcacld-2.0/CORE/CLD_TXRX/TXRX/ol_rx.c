@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -43,6 +43,7 @@
 #include <ol_rx_reorder.h>     /* ol_rx_reorder_store, etc. */
 #include <ol_rx_reorder_timeout.h> /* OL_RX_REORDER_TIMEOUT_UPDATE */
 #include <ol_rx_defrag.h>      /* ol_rx_defrag_waitlist_flush */
+#include <ol_rx_fwd.h>             /* ol_rx_fwd_check, etc. */
 #include <ol_txrx_internal.h>
 #include <wdi_event.h>
 #ifdef QCA_SUPPORT_SW_TXRX_ENCAP
@@ -92,7 +93,7 @@ void ol_rx_trigger_restore(htt_pdev_handle htt_pdev, adf_nbuf_t head_msdu,
     while (head_msdu) {
         next = adf_nbuf_next(head_msdu);
         VOS_TRACE(VOS_MODULE_ID_TXRX, VOS_TRACE_LEVEL_INFO,
-            "freeing %p\n", head_msdu);
+            "freeing %pK\n", head_msdu);
         adf_nbuf_free(head_msdu);
         head_msdu = next;
     }
@@ -550,7 +551,7 @@ ol_rx_sec_ind_handler(
         return;
     }
     TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1,
-        "sec spec for peer %p (%02x:%02x:%02x:%02x:%02x:%02x): "
+        "sec spec for peer %pK (%02x:%02x:%02x:%02x:%02x:%02x): "
         "%s key of type %d\n",
         peer,
         peer->mac_addr.raw[0], peer->mac_addr.raw[1], peer->mac_addr.raw[2],
@@ -711,7 +712,7 @@ void
 ol_rx_offload_deliver_ind_handler(
     ol_txrx_pdev_handle pdev,
     adf_nbuf_t msg,
-    int msdu_cnt)
+    u_int16_t msdu_cnt)
 {
     int vdev_id, peer_id, tid;
     adf_nbuf_t head_buf, tail_buf, buf;
@@ -720,6 +721,17 @@ ol_rx_offload_deliver_ind_handler(
     u_int8_t fw_desc;
     htt_pdev_handle htt_pdev = pdev->htt_pdev;
 
+    if (msdu_cnt > htt_rx_offload_msdu_cnt(htt_pdev)) {
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+            "%s: invalid msdu_cnt=%u\n",
+            __func__,
+            msdu_cnt);
+        if (pdev->cfg.is_high_latency)
+            htt_rx_desc_frame_free(htt_pdev, msg);
+
+        return;
+    }
+
     while (msdu_cnt) {
         if (!htt_rx_offload_msdu_pop(
             htt_pdev, msg, &vdev_id, &peer_id,
@@ -727,7 +739,10 @@ ol_rx_offload_deliver_ind_handler(
             peer = ol_txrx_peer_find_by_id(pdev, peer_id);
             if (peer && peer->vdev) {
                 vdev = peer->vdev;
-                OL_RX_OSIF_DELIVER(vdev, peer, head_buf);
+                if (pdev->cfg.is_high_latency)
+                    ol_rx_fwd_check(vdev, peer, tid, head_buf);
+                else
+                    OL_RX_OSIF_DELIVER(vdev, peer, head_buf);
             } else {
                 buf = head_buf;
                 while (1) {
@@ -924,7 +939,7 @@ ol_rx_deliver(
         if (OL_RX_DECAP(vdev, peer, msdu, &info) != A_OK) {
             discard = 1;
             TXRX_PRINT(TXRX_PRINT_LEVEL_WARN,
-                "decap error %p from peer %p "
+                "decap error %pK from peer %pK "
                 "(%02x:%02x:%02x:%02x:%02x:%02x) len %d\n",
                  msdu, peer,
                  peer->mac_addr.raw[0], peer->mac_addr.raw[1],
@@ -1088,7 +1103,7 @@ ol_rx_discard(
 
         msdu_list = adf_nbuf_next(msdu_list);
         TXRX_PRINT(TXRX_PRINT_LEVEL_INFO1,
-            "discard rx %p from partly-deleted peer %p "
+            "discard rx %pK from partly-deleted peer %pK "
             "(%02x:%02x:%02x:%02x:%02x:%02x)\n",
             msdu, peer,
             peer->mac_addr.raw[0], peer->mac_addr.raw[1],
@@ -1115,6 +1130,9 @@ ol_rx_peer_init(struct ol_txrx_pdev_t *pdev, struct ol_txrx_peer_t *peer)
     peer->security[txrx_sec_ucast].sec_type =
         peer->security[txrx_sec_mcast].sec_type = htt_sec_type_none;
     peer->keyinstalled = 0;
+    peer->last_assoc_rcvd = 0;
+    peer->last_disassoc_deauth_rcvd = 0;
+
     adf_os_atomic_init(&peer->fw_pn_check);
 }
 
@@ -1122,6 +1140,8 @@ void
 ol_rx_peer_cleanup(struct ol_txrx_vdev_t *vdev, struct ol_txrx_peer_t *peer)
 {
     peer->keyinstalled = 0;
+    peer->last_assoc_rcvd = 0;
+    peer->last_disassoc_deauth_rcvd = 0;
     ol_rx_reorder_peer_cleanup(vdev, peer);
     adf_os_mem_free(peer->reorder_history);
     peer->reorder_history = NULL;
@@ -1158,8 +1178,17 @@ ol_rx_in_order_indication_handler(
     int status;
     adf_nbuf_t head_msdu, tail_msdu = NULL;
 
+    if (tid >= OL_TXRX_NUM_EXT_TIDS) {
+        TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,
+                   "%s: invalid tid, %u\n", __FUNCTION__, tid);
+        WARN_ON(1);
+        return;
+    }
+
     if (pdev) {
         peer = ol_txrx_peer_find_by_id(pdev, peer_id);
+        if (VOS_MONITOR_MODE == vos_get_conparam())
+            peer = pdev->self_peer;
         htt_pdev = pdev->htt_pdev;
     } else {
         TXRX_PRINT(TXRX_PRINT_LEVEL_ERR,

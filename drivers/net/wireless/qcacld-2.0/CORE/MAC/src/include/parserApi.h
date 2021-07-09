@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -165,12 +165,13 @@ typedef struct sSirProbeRespBeacon
     tDot11fIEVHTCaps          VHTCaps;
     tDot11fIEVHTOperation     VHTOperation;
     tDot11fIEVHTExtBssLoad    VHTExtBssLoad;
+    tDot11fIEExtCap           ExtCap;
     tDot11fIEOperatingMode    OperatingMode;
     tANI_U8                   WiderBWChanSwitchAnnPresent;
     tDot11fIEWiderBWChanSwitchAnn WiderBWChanSwitchAnn;
 #endif
     tANI_U8                   Vendor1IEPresent;
-    tANI_U8                   Vendor2IEPresent;
+    tDot11fIEvendor2_ie       vendor2_ie;
     tANI_U8                   Vendor3IEPresent;
     tDot11fIEIBSSParams       IBSSParams;
 
@@ -254,6 +255,7 @@ typedef struct sSirAssocReq
     tDot11fIEOperatingMode    operMode;
 #endif
     tDot11fIEExtCap           ExtCap;
+    tDot11fIEvendor2_ie       vendor2_ie;
 } tSirAssocReq, *tpSirAssocReq;
 
 
@@ -310,6 +312,7 @@ typedef struct sSirAssocRsp
 #ifdef WLAN_FEATURE_11W
     tDot11fIETimeoutInterval  TimeoutInterval;
 #endif
+    tDot11fIEvendor2_ie       vendor2_ie;
 } tSirAssocRsp, *tpSirAssocRsp;
 
 #if defined(FEATURE_WLAN_ESE_UPLOAD)
@@ -805,7 +808,8 @@ PopulateDot11fSuppRates(tpAniSirGlobal      pMac,
 tSirRetStatus
 populate_dot11f_rates_tdls(tpAniSirGlobal p_mac,
 			   tDot11fIESuppRates *p_supp_rates,
-			   tDot11fIEExtSuppRates *p_ext_supp_rates);
+			   tDot11fIEExtSuppRates *p_ext_supp_rates,
+			   uint8_t curr_oper_channel);
 
 tSirRetStatus PopulateDot11fTPCReport(tpAniSirGlobal      pMac,
                                       tDot11fIETPCReport *pDot11f,

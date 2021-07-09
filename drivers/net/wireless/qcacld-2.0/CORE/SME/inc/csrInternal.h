@@ -43,6 +43,9 @@
 #include "csrSupport.h"
 #include "vos_nvitem.h"
 #include "wlan_qct_tl.h"
+#include "vos_utils.h"
+
+#include "csrApi.h"
 
 #ifdef WLAN_FEATURE_NEIGHBOR_ROAMING
 #include "csrNeighborRoam.h"
@@ -393,7 +396,6 @@ typedef struct tagScanCmd
     csrScanCompleteCallback callback;
     void                    *pContext;
     eCsrScanReason          reason;
-    eCsrRoamState           lastRoamState[CSR_ROAM_SESSION_MAX];
     tCsrRoamProfile         *pToRoamProfile;
     tANI_U32                roamId;    //this is the ID related to the pToRoamProfile
     union
@@ -402,7 +404,7 @@ typedef struct tagScanCmd
         tCsrBGScanRequest bgScanRequest;
     }u;
     //This flag will be set while aborting the scan due to band change
-    tANI_BOOLEAN            abortScanDueToBandChange;
+     eCsrAbortReason        abort_scan_indication;
 }tScanCmd;
 
 typedef struct tagRoamCmd
@@ -596,8 +598,6 @@ typedef struct tagCsrConfig
     tANI_U32  nInitialDwellTime;     //in units of milliseconds
     bool      initial_scan_no_dfs_chnl;
 
-    tANI_U32  nActiveMinChnTimeBtc;     //in units of milliseconds
-    tANI_U32  nActiveMaxChnTimeBtc;     //in units of milliseconds
     tANI_U8   disableAggWithBtc;
 #ifdef WLAN_AP_STA_CONCURRENCY
     tANI_U32  nPassiveMinChnTimeConc;    //in units of milliseconds
@@ -708,6 +708,8 @@ typedef struct tagCsrConfig
     tANI_BOOLEAN sendDeauthBeforeCon;
     tANI_BOOLEAN ignorePeerErpInfo;
     v_U16_t pkt_err_disconn_th;
+    bool enable_fatal_event;
+    bool vendor_vht_for_24ghz_sap;
 }tCsrConfig;
 
 typedef struct tagCsrChannelPowerInfo
@@ -1042,6 +1044,7 @@ typedef struct tagCsrRoamSession
     tCsrRoamStoredProfile stored_roam_profile;
     bool ch_switch_in_progress;
     bool supported_nss_1x1;
+    bool disable_hi_rssi;
 } tCsrRoamSession;
 
 typedef struct tagCsrRoamStruct
@@ -1056,6 +1059,7 @@ typedef struct tagCsrRoamStruct
     tCsrChannel base40MHzChannels;   //center channels for 40MHz channels
     eCsrRoamState curState[CSR_ROAM_SESSION_MAX];
     eCsrRoamSubState curSubState[CSR_ROAM_SESSION_MAX];
+    eCsrRoamState prev_state[CSR_ROAM_SESSION_MAX];
     //This may or may not have the up-to-date valid channel list
     //It is used to get WNI_CFG_VALID_CHANNEL_LIST and not allocate memory all the time
     tSirMacChanNum validChannelList[WNI_CFG_VALID_CHANNEL_LIST_LEN];
@@ -1097,6 +1101,7 @@ typedef struct tagCsrRoamStruct
     tANI_U8 *pReassocResp;  /* reassociation response from new AP */
     tANI_U16 reassocRespLen;  /* length of reassociation response */
 #endif
+    tANI_BOOLEAN pending_roam_disable;
 }tCsrRoamStruct;
 
 
@@ -1496,7 +1501,7 @@ tANI_BOOLEAN csrRoamIs11rAssoc(tpAniSirGlobal pMac, tANI_U8 sessionId);
 //Returns whether the current association is a ESE assoc or not
 tANI_BOOLEAN csrRoamIsESEAssoc(tpAniSirGlobal pMac, tANI_U8 sessionId);
 tANI_BOOLEAN csrRoamIsEseIniFeatureEnabled(tpAniSirGlobal pMac);
-tANI_BOOLEAN csrNeighborRoamIsESEAssoc(tpAniSirGlobal pMac, tANI_U8 sessionId);
+tANI_BOOLEAN csrNeighborRoamIsESEAssoc(tpAniSirGlobal pMac, tANI_U32 sessionId);
 #endif
 
 //Remove this code once SLM_Sessionization is supported

@@ -63,14 +63,6 @@ enum {
 	MIGRATE_TYPES
 };
 
-/*
- * Returns a list which contains the migrate types on to which
- * an allocation falls back when the free list for the migrate
- * type mtype is depleted.
- * The end of the list is delimited by the type MIGRATE_RESERVE.
- */
-extern int *get_migratetype_fallbacks(int mtype);
-
 #ifdef CONFIG_CMA
 bool is_cma_pageblock(struct page *page);
 #  define is_migrate_cma(migratetype) unlikely((migratetype) == MIGRATE_CMA)
@@ -99,6 +91,7 @@ static inline int get_pageblock_migratetype(struct page *page)
 struct free_area {
 	struct list_head	free_list[MIGRATE_TYPES];
 	unsigned long		nr_free;
+	unsigned long		nr_free_cma;
 };
 
 struct pglist_data;
@@ -159,7 +152,6 @@ enum zone_stat_item {
 #endif
 	NR_ANON_TRANSPARENT_HUGEPAGES,
 	NR_FREE_CMA_PAGES,
-	NR_SWAPCACHE,
 	NR_VM_ZONE_STAT_ITEMS };
 
 /*

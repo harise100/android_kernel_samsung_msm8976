@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -66,6 +66,41 @@ enum wlan_op_mode {
 #define OL_TXQ_PAUSE_REASON_MCC_VDEV_START    (1 << 5)
 #define OL_TXQ_PAUSE_REASON_THROTTLE          (1 << 6)
 
+/**
+ * enum netif_action_type - Type of actions on netif queues
+ * @WLAN_STOP_ALL_NETIF_QUEUE: stop all netif queues
+ * @WLAN_START_ALL_NETIF_QUEUE: start all netif queues
+ * @WLAN_WAKE_ALL_NETIF_QUEUE: wake all netif queues
+ * @WLAN_STOP_ALL_NETIF_QUEUE_N_CARRIER: stop all queues and off carrier
+ * @WLAN_START_ALL_NETIF_QUEUE_N_CARRIER: start all queues and on carrier
+ * @WLAN_NETIF_TX_DISABLE: disable tx
+ * @WLAN_NETIF_TX_DISABLE_N_CARRIER: disable tx and off carrier
+ * @WLAN_NETIF_CARRIER_ON: on carrier
+ * @WLAN_NETIF_CARRIER_OFF: off carrier
+ */
+enum netif_action_type {
+	WLAN_STOP_ALL_NETIF_QUEUE,
+	WLAN_START_ALL_NETIF_QUEUE,
+	WLAN_WAKE_ALL_NETIF_QUEUE,
+	WLAN_STOP_ALL_NETIF_QUEUE_N_CARRIER,
+	WLAN_START_ALL_NETIF_QUEUE_N_CARRIER,
+	WLAN_NETIF_TX_DISABLE,
+	WLAN_NETIF_TX_DISABLE_N_CARRIER,
+	WLAN_NETIF_CARRIER_ON,
+	WLAN_NETIF_CARRIER_OFF,
+	WLAN_NETIF_ACTION_TYPE_MAX,
+};
+
+/**
+ * enum netif_reason_type - reason for netif queue action
+ * @WLAN_CONTROL_PATH: action from control path
+ * @WLAN_DATA_FLOW_CONTROL: because of flow control
+ */
+enum netif_reason_type {
+	WLAN_CONTROL_PATH,
+	WLAN_DATA_FLOW_CONTROL,
+};
+
 /* command options for dumpStats*/
 #define WLAN_HDD_STATS               0
 #define WLAN_TXRX_STATS              1
@@ -76,6 +111,8 @@ enum wlan_op_mode {
 #define WLAN_BUNDLE_STATS           23
 #define WLAN_CREDIT_STATS           24
 #endif
+
+#define OL_TXSTATS_DUMP_MOD_FREQ    10
 
 /**
  * @brief Set up the data SW subsystem.
@@ -724,6 +761,19 @@ int
 ol_txrx_get_tx_pending(
     ol_txrx_pdev_handle pdev);
 
+/**
+ * ol_txrx_get_queue_status() - Get the status of tx queues.
+ * @pdev: the data physical device object
+ *
+ * This api is used while trying to go in suspend mode.
+ *
+ * Return - status: A_OK - if all queues are empty
+ *                  A_ERROR - if any queue is not empty
+ */
+A_STATUS
+ol_txrx_get_queue_status(
+	ol_txrx_pdev_handle pdev);
+
 void ol_txrx_dump_tx_desc(ol_txrx_pdev_handle pdev);
 
 /**
@@ -925,6 +975,8 @@ struct txrx_pdev_cfg_param_t {
     u_int32_t uc_rx_indication_ring_count;
     /* IPA Micro controller data path offload TX partition base */
     u_int32_t uc_tx_partition_base;
+    uint16_t pkt_bundle_timer_value;
+    uint16_t pkt_bundle_size;
 };
 
 /**
@@ -1376,6 +1428,19 @@ void ol_txrx_set_ocb_peer(struct ol_txrx_pdev_t *pdev, struct ol_txrx_peer_t *pe
  *      Otherwise, returns A_FALSE
  */
 a_bool_t ol_txrx_get_ocb_peer(struct ol_txrx_pdev_t *pdev, struct ol_txrx_peer_t **peer);
+
+/**
+ * ol_txrx_set_ocb_def_tx_param() - Set the default OCB TX parameters
+ * @vdev: The OCB vdev that will use these defaults.
+ * @_def_tx_param: The default TX parameters.
+ * @def_tx_param_size: The size of the _def_tx_param buffer.
+ *
+ * Return: true if the default parameters were set correctly, false if there
+ * is an error, for example an invalid parameter. In the case that false is
+ * returned, see the kernel log for the error description.
+ */
+bool ol_txrx_set_ocb_def_tx_param(ol_txrx_vdev_handle vdev,
+	void *def_tx_param, uint32_t def_tx_param_size);
 
 void ol_txrx_display_stats(struct ol_txrx_pdev_t *pdev, uint16_t bitmap);
 void ol_txrx_clear_stats(struct ol_txrx_pdev_t *pdev, uint16_t bitmap);

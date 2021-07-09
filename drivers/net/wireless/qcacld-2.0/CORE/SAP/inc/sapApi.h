@@ -174,7 +174,6 @@ typedef enum {
     eSAP_GET_WPSPBC_SESSION_EVENT,  /* Event send when user call  WLANSAP_getWpsSessionOverlap */
     eSAP_WPS_PBC_PROBE_REQ_EVENT, /* Event send on WPS PBC probe request is received */
     eSAP_REMAIN_CHAN_READY,
-    eSAP_SEND_ACTION_CNF,
     eSAP_DISCONNECT_ALL_P2P_CLIENT,
     eSAP_MAC_TRIG_STOP_BSS_EVENT,
     eSAP_UNKNOWN_STA_JOIN, /* Event send when a STA in neither white list or black list tries to associate in softap mode */
@@ -412,7 +411,7 @@ typedef struct sap_Event_s {
         tSap_AssocStaListEvent                    sapAssocStaListEvent; /*SAP_ASSOC_STA_CALLBACK_EVENT */
         tSap_GetWPSPBCSessionEvent                sapGetWPSPBCSessionEvent; /*SAP_GET_WPSPBC_SESSION_EVENT */
         tSap_WPSPBCProbeReqEvent                  sapPBCProbeReqEvent; /*eSAP_WPS_PBC_PROBE_REQ_EVENT */
-        tSap_SendActionCnf                        sapActionCnf;  /* eSAP_SEND_ACTION_CNF */
+        tSap_SendActionCnf                        sapActionCnf;
         tSap_UnknownSTAJoinEvent                  sapUnknownSTAJoin; /* eSAP_UNKNOWN_STA_JOIN */
         tSap_MaxAssocExceededEvent                sapMaxAssocExceeded; /* eSAP_MAX_ASSOC_EXCEEDED */
         tSap_DfsNolInfo                           sapDfsNolInfo;    /*eSAP_DFS_NOL_XXX */
@@ -498,6 +497,7 @@ typedef struct sap_Config {
     v_U32_t         ht_op_mode_fixed;
     tVOS_CON_MODE   persona; /*Tells us which persona it is GO or AP for now*/
     v_U8_t          disableDFSChSwitch;
+    v_U8_t          enable_radar_war;
     eCsrBand        scanBandPreference;
     v_BOOL_t        enOverLapCh;
     v_U16_t         acsBandSwitchThreshold;
@@ -629,6 +629,7 @@ typedef struct sSapDfsInfo
      * channel switch is disabled.
      */
     v_U8_t              disable_dfs_ch_switch;
+    v_U8_t              sap_enable_radar_war;
     uint16_t tx_leakage_threshold;
 } tSapDfsInfo;
 

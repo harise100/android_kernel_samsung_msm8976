@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2016 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -143,7 +143,8 @@ void hdd_softap_tx_resume_timer_expired_handler(void *adapter_context)
    }
 
    hddLog(LOG1, FL("Enabling queues"));
-   netif_tx_wake_all_queues(pAdapter->dev);
+   wlan_hdd_netif_queue_control(pAdapter, WLAN_WAKE_ALL_NETIF_QUEUE,
+                 WLAN_CONTROL_PATH);
    return;
 }
 
@@ -179,7 +180,9 @@ void hdd_softap_tx_resume_cb(void *adapter_context,
        }
 
        hddLog(LOG1, FL("Enabling queues"));
-       netif_tx_wake_all_queues(pAdapter->dev);
+       wlan_hdd_netif_queue_control(pAdapter,
+            WLAN_WAKE_ALL_NETIF_QUEUE,
+            WLAN_DATA_FLOW_CONTROL);
        pAdapter->hdd_stats.hddTxRxStats.txflow_unpause_cnt++;
        pAdapter->hdd_stats.hddTxRxStats.is_txflow_paused = FALSE;
 
@@ -188,7 +191,9 @@ void hdd_softap_tx_resume_cb(void *adapter_context,
     else if (VOS_FALSE == tx_resume)  /* Pause TX  */
     {
         hddLog(LOG1, FL("Disabling queues"));
-        netif_tx_stop_all_queues(pAdapter->dev);
+        wlan_hdd_netif_queue_control(pAdapter,
+            WLAN_STOP_ALL_NETIF_QUEUE,
+            WLAN_DATA_FLOW_CONTROL);
         if (VOS_TIMER_STATE_STOPPED ==
             vos_timer_getCurrentState(&pAdapter->tx_flow_control_timer))
         {
@@ -282,7 +287,7 @@ int __hdd_softap_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
                goto drop_pkt;
            }
 
-           if (STAId == HDD_WLAN_INVALID_STA_ID)
+           if (STAId == HDD_WLAN_INVALID_STA_ID || STAId >= WLAN_MAX_STA_COUNT)
            {
                VOS_TRACE( VOS_MODULE_ID_HDD_SAP_DATA, VOS_TRACE_LEVEL_WARN,
                           "%s: Failed to find right station", __func__);
@@ -334,7 +339,8 @@ int __hdd_softap_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
                (VOS_TIMER_STATE_STOPPED ==
                 vos_timer_getCurrentState(&pAdapter->tx_flow_control_timer))) {
                hddLog(LOG1, FL("Disabling queues"));
-               netif_tx_stop_all_queues(dev);
+               wlan_hdd_netif_queue_control(pAdapter, WLAN_STOP_ALL_NETIF_QUEUE,
+                           WLAN_DATA_FLOW_CONTROL);
                vos_timer_start(&pAdapter->tx_flow_control_timer,
                                WLAN_SAP_HDD_TX_FLOW_CONTROL_OS_Q_BLOCK_TIME);
                pAdapter->hdd_stats.hddTxRxStats.txflow_timer_cnt++;
@@ -379,6 +385,8 @@ int __hdd_softap_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
            list_tail->next = skb;
            list_tail = list_tail->next;
        }
+       vos_mem_zero(skb->cb, sizeof(skb->cb));
+
        skb = skb_next;
        continue;
 
@@ -443,9 +451,8 @@ static void __hdd_softap_tx_timeout(struct net_device *dev)
 {
    hdd_adapter_t *adapter = WLAN_HDD_GET_PRIV_PTR(dev);
    hdd_context_t *hdd_ctx;
-
-   VOS_TRACE( VOS_MODULE_ID_HDD_SAP_DATA, VOS_TRACE_LEVEL_ERROR,
-      "%s: Transmission timeout occurred", __func__);
+   struct netdev_queue *txq;
+   int i = 0;
 
    hdd_ctx = WLAN_HDD_GET_CTX(adapter);
    if (hdd_ctx->isLogpInProgress) {
@@ -460,6 +467,18 @@ static void __hdd_softap_tx_timeout(struct net_device *dev)
     * case of disassociation it is ok to ignore this. But if associated, we have
     * do possible recovery here.
     */
+
+    VOS_TRACE(VOS_MODULE_ID_HDD_SAP_DATA, VOS_TRACE_LEVEL_ERROR,
+        "%s: Transmission timeout occurred jiffies %lu trans_start %lu",
+        __func__, jiffies, dev->trans_start);
+
+    for (i = 0; i < NUM_TX_QUEUES; i++) {
+        txq = netdev_get_tx_queue(dev, i);
+        VOS_TRACE(VOS_MODULE_ID_HDD_SAP_DATA,
+             VOS_TRACE_LEVEL_ERROR,
+             "Queue%d status: %d txq->trans_start %lu",
+             i, netif_tx_queue_stopped(txq), txq->trans_start);
+    }
 }
 
 /**
@@ -821,11 +840,12 @@ VOS_STATUS hdd_softap_rx_packet_cbk(v_VOID_t *vosContext,
       if (skb->next) {
          rxstat = netif_rx(skb);
       } else {
-#ifdef WLAN_FEATURE_HOLD_RX_WAKELOCK
-         vos_wake_lock_timeout_acquire(&pHddCtx->rx_wake_lock,
-                                       HDD_WAKE_LOCK_DURATION,
-                                       WIFI_POWER_EVENT_WAKELOCK_HOLD_RX);
-#endif
+         if ((pHddCtx->cfg_ini->rx_wakelock_timeout) &&
+             (PACKET_BROADCAST != skb->pkt_type) &&
+             (PACKET_MULTICAST != skb->pkt_type))
+               vos_wake_lock_timeout_acquire(&pHddCtx->rx_wake_lock,
+                              pHddCtx->cfg_ini->rx_wakelock_timeout,
+                              WIFI_POWER_EVENT_WAKELOCK_HOLD_RX);
          /*
           * This is the last packet on the chain
           * Scheduling rx sirq
@@ -908,7 +928,6 @@ VOS_STATUS hdd_softap_RegisterSTA( hdd_adapter_t *pAdapter,
    VOS_STATUS vosStatus = VOS_STATUS_E_FAILURE;
    WLAN_STADescType staDesc = {0};
    hdd_context_t *pHddCtx = pAdapter->pHddCtx;
-   hdd_adapter_t *pmonAdapter = NULL;
 
    //eCsrEncryptionType connectedCipherAlgo;
    //v_BOOL_t  fConnected;
@@ -1032,21 +1051,12 @@ VOS_STATUS hdd_softap_RegisterSTA( hdd_adapter_t *pAdapter,
       pAdapter->sessionCtx.ap.uIsAuthenticated = VOS_FALSE;
 
    }
-   pmonAdapter= hdd_get_mon_adapter( pAdapter->pHddCtx);
-   if(pmonAdapter)
-   {
-       VOS_TRACE( VOS_MODULE_ID_HDD_SAP_DATA, VOS_TRACE_LEVEL_INFO_HIGH,
-                  "Turn on Monitor the carrier");
-       netif_carrier_on(pmonAdapter->dev);
-           //Enable Tx queue
-       hddLog(LOG1, FL("Enabling queues"));
-       netif_tx_start_all_queues(pmonAdapter->dev);
-    }
-   netif_carrier_on(pAdapter->dev);
+
    //Enable Tx queue
    hddLog(LOG1, FL("Enabling queues"));
-   netif_tx_start_all_queues(pAdapter->dev);
-
+   wlan_hdd_netif_queue_control(pAdapter,
+        WLAN_START_ALL_NETIF_QUEUE_N_CARRIER,
+        WLAN_CONTROL_PATH);
    return( vosStatus );
 }
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011-2016 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -38,6 +38,7 @@
 #include "sirApi.h"
 #include "sirMacProtDef.h"
 #include "csrLinkList.h"
+#include <dot11f_rsn_max_len.h>
 
 typedef enum
 {
@@ -150,7 +151,6 @@ typedef tANI_U8 tCsrBssid[VOS_MAC_ADDR_SIZE];
 
 typedef enum
 {
-    eCSR_BSS_TYPE_NONE,
     eCSR_BSS_TYPE_INFRASTRUCTURE,
     eCSR_BSS_TYPE_INFRA_AP,       // SoftAP AP
     eCSR_BSS_TYPE_IBSS,           // an IBSS network we will NOT start
@@ -194,7 +194,7 @@ typedef enum
  */
 typedef enum
 {
-    eCSR_SCAN_ABORT_DEFAULT,
+    eCSR_SCAN_ABORT_DEFAULT = 1,
     eCSR_SCAN_ABORT_DUE_TO_BAND_CHANGE, //Scan aborted due to band change
 }eCsrAbortReason;
 
@@ -380,10 +380,9 @@ typedef struct tagCsrEseCckmInfo
 #endif
 
 #if defined(FEATURE_WLAN_ESE) && defined(FEATURE_WLAN_ESE_UPLOAD)
-#define CSR_DOT11F_IE_RSN_MAX_LEN   (114)  /*TODO: duplicate one in dot11f.h */
 typedef struct tagCsrEseCckmIe
 {
-    tANI_U8 cckmIe[CSR_DOT11F_IE_RSN_MAX_LEN];
+    tANI_U8 cckmIe[DOT11F_IE_RSN_MAX_LEN];
     tANI_U8 cckmIeLen;
 } tCsrEseCckmIe;
 #endif /* FEATURE_WLAN_ESE && FEATURE_WLAN_ESE_UPLOAD */
@@ -427,6 +426,7 @@ typedef struct tagCsrScanResultFilter
      * used to support whitelist ssid feature.
      */
     uint8_t scan_filter_for_roam;
+    tCsrBssid bssid_hint;
 }tCsrScanResultFilter;
 
 
@@ -500,7 +500,6 @@ typedef enum
 #endif
     eCSR_ROAM_FT_START,
     eCSR_ROAM_REMAIN_CHAN_READY,
-    eCSR_ROAM_SEND_ACTION_CNF,
     //this mean error happens before association_start or roaming_start is called.
     eCSR_ROAM_SESSION_OPENED,
     eCSR_ROAM_FT_REASSOC_FAILED,
@@ -641,6 +640,8 @@ typedef enum
     eCSR_ROAM_RESULT_DFS_CHANSW_UPDATE_SUCCESS,
     eCSR_ROAM_RESULT_DFS_CHANSW_UPDATE_FAILURE,
     eCSR_ROAM_EXT_CHG_CHNL_UPDATE_IND,
+    /* If Scan for SSID failed to found proper BSS */
+    eCSR_ROAM_RESULT_SCAN_FOR_SSID_FAILURE,
 }eCsrRoamResult;
 
 
@@ -997,6 +998,8 @@ typedef struct tagCsrRoamProfile
     /* addIe params */
     tSirAddIeParams        addIeParams;
     uint8_t sap_dot11mc;
+    bool do_not_roam;
+    tCsrBssid bssid_hint;
 }tCsrRoamProfile;
 
 
@@ -1167,8 +1170,6 @@ typedef struct tagCsrConfigParam
     tANI_U32  nInitialDwellTime;      //in units of milliseconds
     bool      initial_scan_no_dfs_chnl;
 
-    tANI_U32  nActiveMinChnTimeBtc;     //in units of milliseconds
-    tANI_U32  nActiveMaxChnTimeBtc;     //in units of milliseconds
     tANI_U32  disableAggWithBtc;
 #ifdef WLAN_AP_STA_CONCURRENCY
     tANI_U32  nPassiveMinChnTimeConc;    //in units of milliseconds
@@ -1244,6 +1245,7 @@ typedef struct tagCsrConfigParam
     tANI_U8         txBFCsnValue;
     tANI_U8         enable2x2;
     tANI_BOOLEAN    enableVhtFor24GHz;
+    bool            vendor_vht_for_24ghz_sap;
     tANI_U8         enableMuBformee;
     tANI_U8         enableVhtpAid;
     tANI_U8         enableVhtGid;
@@ -1298,6 +1300,7 @@ typedef struct tagCsrConfigParam
     tANI_BOOLEAN sendDeauthBeforeCon;
     v_U16_t    pkt_err_disconn_th;
     int8_t    first_scan_bucket_threshold;
+    bool    enable_fatal_event;
 }tCsrConfigParam;
 
 //Tush
@@ -1567,6 +1570,7 @@ typedef struct tagCsrLinkEstablishParams
     tSirMacAddr peerMac;
     tANI_U8 uapsdQueues;
     tANI_U8 maxSp;
+    uint8_t qos;
     tANI_U8 isBufSta;
     tANI_U8 isOffChannelSupported;
     tANI_U8 isResponder;
@@ -1596,12 +1600,6 @@ typedef void * tScanResultHandle;
 #define CSR_INVALID_SCANRESULT_HANDLE       (NULL)
 
 #ifdef WLAN_FEATURE_ROAM_SCAN_OFFLOAD
-typedef enum
-{
-    REASSOC     = 0,
-    FASTREASSOC = 1
-}handoff_src;
-
 typedef struct tagCsrHandoffRequest
 {
     tCsrBssid bssid;
@@ -1609,6 +1607,13 @@ typedef struct tagCsrHandoffRequest
     tANI_U8 src;     /* To check if its a REASSOC or a FASTREASSOC IOCTL */
 }tCsrHandoffRequest;
 #endif
+
+typedef enum
+{
+    REASSOC     = 0,
+    FASTREASSOC = 1,
+    CONNECT_CMD_USERSPACE = 2,
+}handoff_src;
 
 #if defined(FEATURE_WLAN_ESE) && defined(FEATURE_WLAN_ESE_UPLOAD)
 typedef struct tagCsrEseBeaconReqParams

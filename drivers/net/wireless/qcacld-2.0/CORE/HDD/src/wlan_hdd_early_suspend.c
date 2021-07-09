@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2015 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2017 The Linux Foundation. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -40,6 +40,7 @@
 *   Include files
 * ----------------------------------------------------------------------------*/
 
+#include <net/addrconf.h>
 #include <linux/pm.h>
 #include <linux/wait.h>
 #include <linux/cpu.h>
@@ -54,7 +55,6 @@
 #include <vos_sched.h>
 #include <macInitApi.h>
 #include <wlan_qct_sys.h>
-#include <wlan_btc_svc.h>
 #include <wlan_nlink_common.h>
 #include <wlan_hdd_main.h>
 #include <wlan_hdd_assoc.h>
@@ -72,10 +72,10 @@
 #include <linux/inetdevice.h>
 #include <wlan_hdd_cfg.h>
 #include <wlan_hdd_cfg80211.h>
-#include <net/addrconf.h>
 #ifdef IPA_OFFLOAD
 #include <wlan_hdd_ipa.h>
 #endif
+#include <wlan_hdd_p2p.h>
 
 /**-----------------------------------------------------------------------------
 *   Preprocessor definitions and constants
@@ -103,9 +103,9 @@
 #include "ol_fw.h"
 /* Time in msec */
 #ifdef CONFIG_SLUB_DEBUG_ON
-#define HDD_SSR_BRING_UP_TIME 40000
+#define HDD_SSR_BRING_UP_TIME 50000
 #else
-#define HDD_SSR_BRING_UP_TIME 30000
+#define HDD_SSR_BRING_UP_TIME 40000
 #endif
 
 static eHalStatus g_full_pwr_status;
@@ -322,8 +322,8 @@ VOS_STATUS hdd_enter_deep_sleep(hdd_context_t *pHddCtx, hdd_adapter_t *pAdapter)
 
    //Stop the Interface TX queue.
    hddLog(LOG1, FL("Disabling queues"));
-   netif_tx_disable(pAdapter->dev);
-   netif_carrier_off(pAdapter->dev);
+   wlan_hdd_netif_queue_control(pAdapter, WLAN_NETIF_TX_DISABLE_N_CARRIER,
+        WLAN_CONTROL_PATH);
 
    //Disable IMPS,BMPS as we do not want the device to enter any power
    //save mode on it own during suspend sequence
@@ -1120,7 +1120,7 @@ VOS_STATUS hdd_conf_arp_offload(hdd_adapter_t *pAdapter, int fenable)
    tSirHostOffloadReq  offLoadRequest;
    hdd_context_t *pHddCtx = WLAN_HDD_GET_CTX(pAdapter);
 
-   hddLog(LOG1, FL(" fenable = %d \n"), fenable);
+   hddLog(LOG1, FL("fenable = %d"), fenable);
 
    /* In SAP/P2PGo mode, ARP/NS offload feature capability
     * is controlled by one bit.
@@ -1462,8 +1462,9 @@ void hdd_suspend_wlan(void (*callback)(void *callbackContext, boolean suspended)
        {
           //stop the interface before putting the chip to standby
           hddLog(LOG1, FL("Disabling queues"));
-          netif_tx_disable(pAdapter->dev);
-          netif_carrier_off(pAdapter->dev);
+          wlan_hdd_netif_queue_control(pAdapter,
+            WLAN_NETIF_TX_DISABLE_N_CARRIER,
+            WLAN_CONTROL_PATH);
        }
        else if (pHddCtx->cfg_ini->nEnableSuspend ==
                WLAN_MAP_SUSPEND_TO_DEEP_SLEEP)
@@ -1476,7 +1477,8 @@ void hdd_suspend_wlan(void (*callback)(void *callbackContext, boolean suspended)
 send_suspend_ind:
        //stop all TX queues before suspend
        hddLog(LOG1, FL("Disabling queues"));
-       netif_tx_disable(pAdapter->dev);
+       wlan_hdd_netif_queue_control(pAdapter, WLAN_NETIF_TX_DISABLE,
+                  WLAN_CONTROL_PATH);
        WLANTL_PauseUnPauseQs(pVosContext, true);
 
       /* Keep this suspend indication at the end (before processing next adaptor)
@@ -1725,7 +1727,9 @@ send_resume_ind:
       hddLog(LOG1, FL("Enabling queues"));
       WLANTL_PauseUnPauseQs(pVosContext, false);
 
-      netif_tx_wake_all_queues(pAdapter->dev);
+      wlan_hdd_netif_queue_control(pAdapter,
+            WLAN_WAKE_ALL_NETIF_QUEUE,
+            WLAN_CONTROL_PATH);
 
       hdd_conf_resume_ind(pAdapter);
 
@@ -1918,6 +1922,7 @@ VOS_STATUS hdd_wlan_shutdown(void)
    vos_free_tlshim_pkt_freeq(vosSchedContext);
 #endif
 
+   tl_shim_flush_cache_rx_queue();
 
    hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Doing WDA STOP", __func__);
    vosStatus = WDA_stop(pVosContext, HAL_STOP_TYPE_RF_KILL);
@@ -2188,7 +2193,6 @@ VOS_STATUS hdd_wlan_re_init(void *hif_sc)
    pHddCtx->hdd_mcastbcast_filter_set = FALSE;
    pHddCtx->btCoexModeSet = false;
    hdd_register_mcast_bcast_filter(pHddCtx);
-   hdd_ssr_timer_del();
 
    wlan_hdd_send_svc_nlink_msg(WLAN_SVC_FW_CRASHED_IND, NULL, 0);
 
@@ -2202,11 +2206,18 @@ VOS_STATUS hdd_wlan_re_init(void *hif_sc)
       goto err_unregister_pmops;
    }
    vos_set_reinit_in_progress(VOS_MODULE_ID_VOSS, FALSE);
+
+   sme_register_mgmt_frame_ind_callback(pHddCtx->hHal, hdd_indicate_mgmt_frame);
+
+   /* Register for p2p ack indication */
+   sme_register_p2p_ack_ind_callback(pHddCtx->hHal, hdd_send_action_cnf_cb);
+
 #ifdef FEATURE_WLAN_EXTSCAN
    sme_ExtScanRegisterCallback(pHddCtx->hHal,
                                wlan_hdd_cfg80211_extscan_callback);
 #endif /* FEATURE_WLAN_EXTSCAN */
    sme_set_rssi_threshold_breached_cb(pHddCtx->hHal, hdd_rssi_threshold_breached);
+   wlan_hdd_cfg80211_link_layer_stats_init(pHddCtx);
 
 #ifdef WLAN_FEATURE_LPSS
    wlan_hdd_send_all_scan_intf_info(pHddCtx);
@@ -2244,7 +2255,6 @@ err_re_init:
          /* Unregister all Net Device Notifiers */
          wlan_hdd_netdev_notifiers_cleanup(pHddCtx);
          /* Clean up HDD Nlink Service */
-         send_btc_nlink_msg(WLAN_MODULE_DOWN_IND, 0);
 #ifdef WLAN_KD_READY_NOTIFIER
          nl_srv_exit(pHddCtx->ptt_pid);
 #else
@@ -2255,7 +2265,7 @@ err_re_init:
          /* Free up dynamically allocated members
           * inside HDD Adapter
           */
-         kfree(pHddCtx->cfg_ini);
+         vos_mem_free(pHddCtx->cfg_ini);
          pHddCtx->cfg_ini= NULL;
          /* Destroy all wakelocks */
          wlan_hdd_wakelocks_destroy(pHddCtx);
@@ -2272,8 +2282,7 @@ err_re_init:
    hdd_wlan_wakelock_destroy();
    return -EPERM;
 success:
-   /* Trigger replay of BTC events */
-   send_btc_nlink_msg(WLAN_MODULE_DOWN_IND, 0);
    pHddCtx->isLogpInProgress = FALSE;
+   hdd_ssr_timer_del();
    return VOS_STATUS_SUCCESS;
 }

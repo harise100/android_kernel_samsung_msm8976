@@ -92,6 +92,9 @@ typedef tANI_U8 tSirVersionString[SIR_VERSION_STRING_LEN];
 
 #define MAX_LEN_UDP_RESP_OFFLOAD 128
 
+/* Maximum peer station number query one time */
+#define MAX_PEER_STA 12
+
 #ifdef FEATURE_WLAN_EXTSCAN
 
 #define WLAN_EXTSCAN_MAX_CHANNELS                 36
@@ -536,6 +539,7 @@ typedef enum eSirBssType
     eSIR_BTAMP_STA_MODE,                     //Added for BT-AMP support
     eSIR_BTAMP_AP_MODE,                     //Added for BT-AMP support
     eSIR_AUTO_MODE,
+    eSIR_MONITOR_MODE,
     eSIR_DONOT_USE_BSS_TYPE = SIR_MAX_ENUM_SIZE
 } tSirBssType;
 
@@ -678,6 +682,7 @@ typedef struct sSirSmeStartBssReq
 
     tANI_BOOLEAN            obssEnabled;
     uint8_t                 sap_dot11mc;
+    bool                    vendor_vht_for_24ghz_sap;
 
 } tSirSmeStartBssReq, *tpSirSmeStartBssReq;
 
@@ -957,8 +962,9 @@ typedef struct sSirSmeScanChanReq
 #ifdef FEATURE_OEM_DATA_SUPPORT
 
 #ifndef OEM_DATA_REQ_SIZE
-#define OEM_DATA_REQ_SIZE 280
+#define OEM_DATA_REQ_SIZE 500
 #endif
+
 #ifndef OEM_DATA_RSP_SIZE
 #define OEM_DATA_RSP_SIZE 1724
 #endif
@@ -968,7 +974,7 @@ typedef struct sSirOemDataReq
     tANI_U16              messageType; /* eWNI_SME_OEM_DATA_REQ */
     tANI_U16              messageLen;
     tSirMacAddr           selfMacAddr;
-    uint8_t               data_len;
+    uint32_t              data_len;
     uint8_t               *data;
 } tSirOemDataReq, *tpSirOemDataReq;
 
@@ -977,7 +983,8 @@ typedef struct sSirOemDataRsp
     tANI_U16             messageType;
     tANI_U16             length;
     bool                 target_rsp;
-    tANI_U8              oemDataRsp[OEM_DATA_RSP_SIZE];
+    uint32_t             rsp_len;
+    uint8_t              *oem_data_rsp;
 } tSirOemDataRsp, *tpSirOemDataRsp;
 
 #endif //FEATURE_OEM_DATA_SUPPORT
@@ -1039,6 +1046,8 @@ typedef struct sSirSmeJoinReq
     tANI_U8             cc_switch_mode;
 #endif
     tVOS_CON_MODE       staPersona;             //Persona
+    bool                osen_association;
+    bool                wps_registration;
     ePhyChanBondState   cbMode;                 // Pass CB mode value in Join.
 
     /*This contains the UAPSD Flag for all 4 AC
@@ -1111,7 +1120,11 @@ typedef struct sSirSmeJoinReq
     tSirMacPowerCapInfo powerCap;
     tSirSupChnl         supportedChannels;
     tSirBssDescription  bssDescription;
-
+    /*
+     * WARNING: Pls make bssDescription as last variable in struct
+     * tSirSmeJoinReq as it has ieFields followed after this bss
+     * description. Adding a variable after this corrupts the ieFields
+     */
 } tSirSmeJoinReq, *tpSirSmeJoinReq;
 
 /* Definition for response message to previously issued join request */
@@ -1701,6 +1714,15 @@ typedef struct sSirSmeDeauthCnf
     tSirMacAddr         bssId;             // AP BSSID
     tSirMacAddr        peerMacAddr;
 } tSirSmeDeauthCnf, *tpSirSmeDeauthCnf;
+
+/* Definition for disconnect done indication */
+typedef struct sSirSmeDisConDoneInd {
+   tANI_U16           messageType;
+   tANI_U16           length;
+   tANI_U8            sessionId;
+   tSirResultCodes    reasonCode;
+   tSirMacAddr        peerMacAddr;
+} tSirSmeDisConDoneInd, *tpSirSmeDisConDoneInd;
 
 /// Definition for stop BSS request message
 typedef struct sSirSmeStopBssReq
@@ -3295,6 +3317,19 @@ typedef struct sSirUpdateParams
     tANI_U8        ssidHidden;     // Hide SSID
 } tSirUpdateParams, *tpSirUpdateParams;
 
+/**
+ * struct sir_create_session - Used for creating session in monitor mode
+ * @type: SME host message type.
+ * @msg_len: Length of the message.
+ * @bss_id: bss_id for creating the session.
+ */
+struct sir_create_session
+{
+	uint16_t       type;
+	uint16_t       msg_len;
+	tSirMacAddr    bss_id;
+};
+
 //Beacon Interval
 typedef struct sSirChangeBIParams
 {
@@ -3516,6 +3551,21 @@ struct sir_sme_mgmt_frame_cb_req {
 	uint16_t message_type;
 	uint16_t length;
 	sir_mgmt_frame_ind_callback callback;
+};
+
+typedef void (*sir_p2p_ack_ind_callback)(uint32_t session_id,
+					bool tx_completion_status);
+
+/**
+ * struct sir_p2p_ack_ind_cb_req - Register a p2p ack ind callback req
+ * @message_type: message id
+ * @length: msg length
+ * @callback: callback for p2p ack indication
+ */
+struct sir_sme_p2p_ack_ind_cb_req {
+	uint16_t message_type;
+	uint16_t length;
+	sir_p2p_ack_ind_callback callback;
 };
 
 #ifdef WLAN_FEATURE_11W
@@ -3796,14 +3846,12 @@ struct roam_ext_params {
 	int rssi_diff;
 	int good_rssi_roam;
 	bool is_5g_pref_enabled;
-	int dense_rssi_thresh_offset;
-	int dense_min_aps_cnt;
-	int initial_dense_status;
-	int traffic_threshold;
 };
 
 typedef struct sSirRoamOffloadScanReq
 {
+  uint16_t    message_type;
+  uint16_t    length;
   eAniBoolean RoamScanOffloadEnabled;
   eAniBoolean MAWCEnabled;
   tANI_S8     LookupThreshold;
@@ -3875,14 +3923,6 @@ typedef struct sSirRoamOffloadScanRsp
   tANI_U32 reason;
 } tSirRoamOffloadScanRsp, *tpSirRoamOffloadScanRsp;
 
-struct sir_sme_roam_restart_req
-{
-	tANI_U16 message_type;
-	tANI_U16 length;
-	tANI_U8  sme_session_id;
-	tANI_U8  command;
-	tANI_U8  reason;
-};
 #endif //WLAN_FEATURE_ROAM_SCAN_OFFLOAD
 
 #define SIR_NOCHANGE_POWER_VALUE  0xFFFFFFFF
@@ -4302,6 +4342,7 @@ typedef struct sSirActiveModeSetBcnFilterReq
    tANI_U16               messageType;
    tANI_U16               length;
    tANI_U8                seesionId;
+   tSirMacAddr            bssid;
 } tSirSetActiveModeSetBncFilterReq, *tpSirSetActiveModeSetBncFilterReq;
 
 //Reset AP Caps Changed
@@ -4385,20 +4426,32 @@ typedef struct sSirScanOffloadReq {
       -----------------------------*/
 } tSirScanOffloadReq, *tpSirScanOffloadReq;
 
-typedef enum sSirScanEventType {
-    SCAN_EVENT_STARTED=0x1,          /* Scan command accepted by FW */
-    SCAN_EVENT_COMPLETED=0x2,        /* Scan has been completed by FW */
-    SCAN_EVENT_BSS_CHANNEL=0x4,      /* FW is going to move to HOME channel */
-    SCAN_EVENT_FOREIGN_CHANNEL = 0x8,/* FW is going to move to FORIEGN channel */
-    SCAN_EVENT_DEQUEUED=0x10,       /* scan request got dequeued */
-    SCAN_EVENT_PREEMPTED=0x20,      /* preempted by other high priority scan */
-    SCAN_EVENT_START_FAILED=0x40,   /* scan start failed */
-    SCAN_EVENT_RESTARTED=0x80,      /*scan restarted*/
-    SCAN_EVENT_MAX=0x8000
-} tSirScanEventType;
+/**
+ * sir_scan_event_type - scan event types used in LIM
+ * @SIR_SCAN_EVENT_STARTED - scan command accepted by FW
+ * @SIR_SCAN_EVENT_COMPLETED - scan has been completed by FW
+ * @SIR_SCAN_EVENT_BSS_CHANNEL - FW is going to move to HOME channel
+ * @SIR_SCAN_EVENT_FOREIGN_CHANNEL - FW is going to move to FORIEGN channel
+ * @SIR_SCAN_EVENT_DEQUEUED - scan request got dequeued
+ * @SIR_SCAN_EVENT_PREEMPTED - preempted by other high priority scan
+ * @SIR_SCAN_EVENT_START_FAILED - scan start failed
+ * @SIR_SCAN_EVENT_RESTARTED - scan restarted
+ * @SIR_SCAN_EVENT_MAX - max value for event type
+*/
+enum sir_scan_event_type {
+    SIR_SCAN_EVENT_STARTED=0x1,
+    SIR_SCAN_EVENT_COMPLETED=0x2,
+    SIR_SCAN_EVENT_BSS_CHANNEL=0x4,
+    SIR_SCAN_EVENT_FOREIGN_CHANNEL = 0x8,
+    SIR_SCAN_EVENT_DEQUEUED=0x10,
+    SIR_SCAN_EVENT_PREEMPTED=0x20,
+    SIR_SCAN_EVENT_START_FAILED=0x40,
+    SIR_SCAN_EVENT_RESTARTED=0x80,
+    SIR_SCAN_EVENT_MAX=0x8000
+};
 
 typedef struct sSirScanOffloadEvent{
-    tSirScanEventType event;
+    enum sir_scan_event_type event;
     tSirResultCodes reasonCode;
     tANI_U32 chanFreq;
     tANI_U32 requestor;
@@ -4577,6 +4630,16 @@ struct sir_rssi_resp {
 	struct sir_rssi_info info[0];
 };
 
+/**
+ * @sta_num: number of peer station which has valid info
+ * @info: peer information
+ *
+ * all SAP peer station's information retrieved
+ */
+struct sir_peer_sta_info {
+	uint8_t sta_num;
+	struct sir_rssi_info info[MAX_PEER_STA];
+};
 
 typedef struct sSirAddPeriodicTxPtrn
 {
@@ -6244,8 +6307,8 @@ struct sir_ocb_config_sched {
  * @dcc_ndl_chan_list: array of dcc channel info
  * @dcc_ndl_active_state_list_len: size of the active state array
  * @dcc_ndl_active_state_list: array of active states
- * @adapter: the OCB adapter
- * @dcc_stats_callback: callback for the response event
+ * @def_tx_param: default TX parameters
+ * @def_tx_param_size: size of the default TX parameters
  */
 struct sir_ocb_config {
 	uint8_t session_id;
@@ -6258,6 +6321,8 @@ struct sir_ocb_config {
 	void *dcc_ndl_chan_list;
 	uint32_t dcc_ndl_active_state_list_len;
 	void *dcc_ndl_active_state_list;
+	void *def_tx_param;
+	uint32_t def_tx_param_size;
 };
 
 /* The size of the utc time in bytes. */
@@ -6645,6 +6710,27 @@ struct sir_del_all_tdls_peers {
 	uint16_t msg_type;
 	uint16_t msg_len;
 	tSirMacAddr bssid;
+};
+
+/**
+ * struct sme_send_disassoc_frm_req - send disassoc request frame
+ * @msg_type: message type
+ * @length: length of message
+ * @session_id: session id
+ * @trans_id: transaction id
+ * @peer_mac: peer mac address
+ * @reason: reason for disassoc
+ * @wait_for_ack: wait for acknowledgment
+ */
+struct sme_send_disassoc_frm_req
+{
+	uint16_t msg_type;
+	uint16_t length;
+	uint8_t session_id;
+	uint16_t trans_id;
+	uint8_t peer_mac[6];
+	uint16_t reason;
+	uint8_t wait_for_ack;
 };
 
 #endif /* __SIR_API_H */

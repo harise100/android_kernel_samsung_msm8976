@@ -581,6 +581,7 @@ static void PopulateDot11fTdlsHtVhtCap(tpAniSirGlobal pMac, uint32 selfDot11Mode
     else
         nss = pMac->vdev_type_nss_2g.tdls;
 
+    nss = VOS_MIN(nss, pMac->user_configured_nss);
     if (IS_DOT11_MODE_HT(selfDot11Mode))
     {
         /* Include HT Capability IE */
@@ -724,7 +725,8 @@ static tSirRetStatus limSendTdlsDisRspFrame(tpAniSirGlobal pMac,
 
     /* populate supported rate and ext supported rate IE */
     if (eSIR_FAILURE == populate_dot11f_rates_tdls(pMac, &tdlsDisRsp.SuppRates,
-                               &tdlsDisRsp.ExtSuppRates))
+                               &tdlsDisRsp.ExtSuppRates,
+                               psessionEntry->currentOperChannel))
         limLog(pMac, LOGE, FL("could not populate supported data rates"));
 
 
@@ -974,9 +976,13 @@ tSirRetStatus limSendTdlsLinkSetupReqFrame(tpAniSirGlobal pMac,
     }
     swapBitField16(caps, ( tANI_U16* )&tdlsSetupReq.Capabilities );
 
+    limLog(pMac, LOG1, FL("Sending operating channel %d and dotl11mode %d\n"),
+           psessionEntry->currentOperChannel, psessionEntry->dot11mode);
+
     /* populate supported rate and ext supported rate IE */
     populate_dot11f_rates_tdls(pMac, &tdlsSetupReq.SuppRates,
-                               &tdlsSetupReq.ExtSuppRates);
+                               &tdlsSetupReq.ExtSuppRates,
+                               psessionEntry->currentOperChannel);
 
     /* Populate extended supported rates */
     PopulateDot11fTdlsExtCapability(pMac, psessionEntry, &tdlsSetupReq.ExtCap);
@@ -1468,7 +1474,8 @@ static tSirRetStatus limSendTdlsSetupRspFrame(tpAniSirGlobal pMac,
 
     /* populate supported rate and ext supported rate IE */
     populate_dot11f_rates_tdls(pMac, &tdlsSetupRsp.SuppRates,
-                               &tdlsSetupRsp.ExtSuppRates);
+                               &tdlsSetupRsp.ExtSuppRates,
+                               psessionEntry->currentOperChannel);
 
     /* Populate extended supported rates */
     PopulateDot11fTdlsExtCapability(pMac, psessionEntry, &tdlsSetupRsp.ExtCap);
@@ -2245,6 +2252,7 @@ limTdlsPopulateMatchingRateSet(tpAniSirGlobal pMac,
         nss = pMac->vdev_type_nss_5g.tdls;
     else
         nss = pMac->vdev_type_nss_2g.tdls;
+    nss = VOS_MIN(nss, pMac->user_configured_nss);
     //compute the matching MCS rate set, if peer is 11n capable and self mode is 11n
 #ifdef FEATURE_WLAN_TDLS
     if (pStaDs->mlmStaContext.htCapability)
@@ -2619,6 +2627,9 @@ void PopulateDot11fTdlsOffchannelParams(tpAniSirGlobal pMac,
     tANI_U8    chanOffset;
     tANI_U8    op_class;
     tANI_U8    numClasses;
+    uint32_t   band;
+    uint8_t    nss_2g;
+    uint8_t    nss_5g;
     tANI_U8    classes[SIR_MAC_MAX_SUPP_OPER_CLASSES];
     if (wlan_cfgGetStr(pMac, WNI_CFG_VALID_CHANNEL_LIST,
                           validChan, &numChans) != eSIR_SUCCESS)
@@ -2631,15 +2642,32 @@ void PopulateDot11fTdlsOffchannelParams(tpAniSirGlobal pMac,
          return;
     }
 
-    /* validating the channel list for DFS channels */
-    for (i = 0U; i < numChans; i++)
-    {
-        if (NV_CHANNEL_DFS == vos_nv_getChannelEnabledState(validChan[i]))
-        {
-            limLog(pMac, LOG1,
-                FL("skipping DFS channel %d from the valid channel list"),
-                validChan[i]);
-            continue;
+    if (IS_5G_CH(psessionEntry->currentOperChannel))
+        band = eCSR_BAND_5G;
+    else
+        band = eCSR_BAND_24;
+
+    nss_5g = VOS_MIN(pMac->vdev_type_nss_5g.tdls, pMac->user_configured_nss);
+    nss_2g = VOS_MIN(pMac->vdev_type_nss_2g.tdls, pMac->user_configured_nss);
+
+    /* validating the channel list for DFS and 2G channels */
+    for (i = 0U; i < numChans; i++) {
+        if ((band == eCSR_BAND_5G) && (NSS_2x2_MODE == nss_5g) &&
+            (NSS_1x1_MODE == nss_2g) &&
+            (true == vos_nv_skip_dsrc_dfs_2g(validChan[i],
+             NV_CHANNEL_SKIP_2G))) {
+                limLog(pMac, LOG1,
+                       FL("skipping channel %d, nss_5g: %d, nss_2g: %d"),
+                       validChan[i], nss_5g, nss_2g);
+                continue;
+        } else {
+            if (true == vos_nv_skip_dsrc_dfs_2g(validChan[i],
+                NV_CHANNEL_SKIP_DSRC)) {
+                limLog(pMac, LOG1,
+                       FL("skipping channel %d from the valid channel list"),
+                       validChan[i]);
+                continue;
+            }
         }
 
         if (valid_count >=
@@ -2766,8 +2794,7 @@ void PopulateDot11fTdlsExtCapability(tpAniSirGlobal pMac,
     p_ext_cap->TDLSProhibited = TDLS_PROHIBITED ;
 
     extCapability->present = 1 ;
-    /* For STA cases we alwasy support 11mc - Allow MAX length */
-    extCapability->num_bytes = DOT11F_IE_EXTCAP_MAX_LEN;
+    extCapability->num_bytes = lim_compute_ext_cap_ie_length(extCapability);
 
     return ;
 }

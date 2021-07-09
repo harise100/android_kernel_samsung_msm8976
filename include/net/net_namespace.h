@@ -52,6 +52,8 @@ struct net {
 #endif
 	spinlock_t		rules_mod_lock;
 
+	u32			hash_mix;
+
 	struct list_head	list;		/* list of network namespaces */
 	struct list_head	cleanup_list;	/* namespaces on death row */
 	struct list_head	exit_list;	/* Use only net_mutex */
@@ -103,6 +105,7 @@ struct net {
 #endif
 #if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
 	struct netns_nf_frag	nf_frag;
+	struct ctl_table_header *nf_frag_frags_hdr;
 #endif
 	struct sock		*nfnl;
 	struct sock		*nfnl_stash;
@@ -119,6 +122,7 @@ struct net {
 	struct netns_ipvs	*ipvs;
 	struct sock		*diag_nlsk;
 	atomic_t		rt_genid;
+	atomic_t		fnhe_genid;
 };
 
 #include <linux/seq_file_net.h>
@@ -331,6 +335,16 @@ static inline int rt_genid(struct net *net)
 static inline void rt_genid_bump(struct net *net)
 {
 	atomic_inc(&net->rt_genid);
+}
+
+static inline int fnhe_genid(struct net *net)
+{
+	return atomic_read(&net->fnhe_genid);
+}
+
+static inline void fnhe_genid_bump(struct net *net)
+{
+	atomic_inc(&net->fnhe_genid);
 }
 
 #endif /* __NET_NET_NAMESPACE_H */

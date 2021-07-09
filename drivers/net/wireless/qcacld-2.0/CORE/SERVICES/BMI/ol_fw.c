@@ -121,12 +121,6 @@ static struct ol_fw_files FW_FILES_DEFAULT = {
 	PREFIX "utfbd.bin", PREFIX "qsetup.bin",
 	PREFIX "epping.bin"};
 
-
-void ol_dump_current_dma_address(void)
-{
-	hif_dump_current_dma_addr();
-}
-
 static A_STATUS ol_sdio_extra_initialization(struct ol_softc *scn);
 
 static int ol_get_fw_files_for_target(struct ol_fw_files *pfw_files,
@@ -707,7 +701,8 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 
 	if (request_firmware(&fw_entry, filename, scn->sc_osdev->device) != 0)
 	{
-		pr_err("%s: Failed to get %s\n", __func__, filename);
+		if (file != ATH_BOARD_DATA_FILE)
+			pr_err("%s: Failed to get %s\n", __func__, filename);
 
 		if (file == ATH_OTP_FILE)
 			return -ENOENT;
@@ -835,10 +830,10 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 		    && (chip_id == AR6320_REV1_1_VERSION
 			|| chip_id == AR6320_REV1_3_VERSION
 			|| chip_id == AR6320_REV2_1_VERSION)) {
-
+			bin_off = sizeof(SIGN_HEADER_T);
 			status = BMISignStreamStart(scn->hif_hdl, address,
 						    (u_int8_t *)fw_entry->data,
-						    sizeof(SIGN_HEADER_T), scn);
+						    bin_off, scn);
 			if (status != EOK) {
 				AR_DEBUG_PRINTF(ATH_DEBUG_ERR,
 					("%s: unable to start sign stream\n",
@@ -847,9 +842,15 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 				goto end;
 			}
 
-			bin_off = sizeof(SIGN_HEADER_T);
-			bin_len = sign_header->rampatch_len
-				  - sizeof(SIGN_HEADER_T);
+			bin_len = sign_header->rampatch_len - bin_off;
+			if (bin_len <= 0 ||
+			    bin_len > fw_entry_size - bin_off) {
+				AR_DEBUG_PRINTF(ATH_DEBUG_ERR,
+						("%s: Invalid sign header\n",
+						 __func__));
+				status = A_ERROR;
+				goto end;
+			}
 		} else {
 			bin_sign = FALSE;
 			bin_off = 0;
@@ -882,7 +883,7 @@ static int __ol_transfer_bin_file(struct ol_softc *scn, ATH_BIN_FILE file,
 		bin_len = sign_header->total_len
 			  - sign_header->rampatch_len;
 
-		if (bin_len > 0) {
+		if (bin_len > 0 && bin_len <= fw_entry_size - bin_off) {
 			status = BMISignStreamStart(scn->hif_hdl, 0,
 					(u_int8_t *)fw_entry->data + bin_off,
 					bin_len, scn);
@@ -1029,7 +1030,10 @@ int ol_copy_ramdump(struct ol_softc *scn)
 		goto out;
 	}
 
+	vos_request_pm_qos_type(PM_QOS_CPU_DMA_LATENCY,
+				DISABLE_KRAIT_IDLE_PS_VAL);
 	ret = ol_target_coredump(scn, scn->ramdump_base, scn->ramdump_size);
+	vos_remove_pm_qos();
 
 out:
 	return ret;
@@ -1229,12 +1233,12 @@ static void ramdump_work_handler(struct work_struct *ramdump)
 	ol_fw_axi_addr = (void *)(byte_ptr + DRAM_SIZE);
 	ol_fw_iram_addr = (void *)(byte_ptr + DRAM_SIZE + AXI_SIZE);
 
-	pr_err("%s: DRAM => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_dram_addr, DRAM_SIZE);
-	pr_err("%s: AXI  => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_axi_addr, AXI_SIZE);
-	pr_err("%s: IRAM => mem = %#08x, len = %d\n", __func__,
-			(u_int32_t)ol_fw_iram_addr, IRAM_SIZE);
+	pr_err("%s: DRAM => mem = %pK, len = %d\n", __func__,
+				ol_fw_dram_addr, DRAM_SIZE);
+	pr_err("%s: AXI  => mem = %pK, len = %d\n", __func__,
+				ol_fw_axi_addr, AXI_SIZE);
+	pr_err("%s: IRAM => mem = %pK, len = %d\n", __func__,
+				ol_fw_iram_addr, IRAM_SIZE);
 #endif
 
 	if (ol_copy_ramdump(ramdump_scn))
@@ -1408,7 +1412,7 @@ void ol_ramdump_handler(struct ol_softc *scn)
 			fw_ram_seg_addr[i] = (scn->ramdump[i])->mem;
 			pr_err("FW %s start addr = %#08x\n",
 				fw_ram_seg_name[i], *reg);
-			pr_err("Memory addr for %s = %p\n",
+			pr_err("Memory addr for %s = %pK\n",
 				fw_ram_seg_name[i],
 				(scn->ramdump[i])->mem);
 			(scn->ramdump[i])->start_addr = *reg;
@@ -1516,7 +1520,7 @@ static int __ol_target_failure(struct ol_softc *scn, void *wma_hdl)
 					dbglog_buf.length) != A_OK)
 			pr_err("%s FW dbglog_data failed\n", __func__);
 		else {
-			pr_info("%s dbglog_hdr.dbuf=%u, dbglog_data=%p,"
+			pr_info("%s dbglog_hdr.dbuf=%u, dbglog_data=%pK,"
 				"dbglog_buf.buffer=%u, dbglog_buf.length=%u\n",
 				__func__, dbglog_hdr.dbuf, dbglog_data,
 				dbglog_buf.buffer, dbglog_buf.length);
@@ -2855,6 +2859,10 @@ ol_sdio_extra_initialization(struct ol_softc *scn)
 		param |= (HI_ACS_FLAGS_SDIO_SWAP_MAILBOX_SET|
                   HI_ACS_FLAGS_SDIO_REDUCE_TX_COMPL_SET|
                   HI_ACS_FLAGS_ALT_DATA_CREDIT_SIZE);
+
+		/* enable TX completion to collect tx_desc for pktlog */
+		if (vos_is_packet_log_enabled())
+			param &= ~HI_ACS_FLAGS_SDIO_REDUCE_TX_COMPL_SET;
 
 		BMIWriteMemory(scn->hif_hdl,
 				host_interest_item_address(scn->target_type,
